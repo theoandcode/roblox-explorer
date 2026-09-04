@@ -649,6 +649,28 @@ async function refreshAuthProxyConfig() {
   catch { renderAuthProxyConfig(); }
 }
 
+function requestSignOut() {
+  if (!state.auth.authenticated) return;
+  openDialog('signout-dialog');
+}
+
+async function confirmSignOut() {
+  const confirmButton = $('confirm-signout-button');
+  confirmButton.disabled = true;
+  try {
+    state.auth = await api.signOut();
+    renderAuth();
+    closeDialog('signout-dialog');
+    setMessage('Roblox session cleared.', 'ok');
+    await refreshAuth();
+    await refreshAuthProxyConfig();
+  } catch (error) {
+    setMessage(readableError(error, 'Could not clear the Roblox session.'));
+  } finally {
+    confirmButton.disabled = false;
+  }
+}
+
 async function saveAuthProxy(value) {
   try {
     state.authProxy = await api.setAuthProxy({ proxy: value });
@@ -883,14 +905,11 @@ $('forget-private-button').addEventListener('click', async () => {
   try { state.savedJoins = await api.forgetSavedPrivateJoins(); renderSavedJoins(); setMessage('Saved private-server codes forgotten.', 'ok'); }
   catch (error) { setMessage(readableError(error, 'Could not forget saved private servers.')); }
 });
-$('clear-session-button').addEventListener('click', async () => {
-  if (!window.confirm('Sign out and clear the Roblox web session for this app?')) return;
-  try { state.auth = await api.signOut(); renderAuth(); setMessage('Roblox session cleared.', 'ok'); }
-  catch (error) { setMessage(readableError(error)); }
-});
+$('clear-session-button').addEventListener('click', requestSignOut);
+$('confirm-signout-button').addEventListener('click', confirmSignOut);
 $('auth-button').addEventListener('click', async () => {
   try {
-    if (state.auth.authenticated) { state.auth = await api.signOut(); setMessage('Roblox session cleared.', 'ok'); }
+    if (state.auth.authenticated) { requestSignOut(); return; }
     else { await api.beginSignIn(); setMessage('Complete sign-in in the Roblox window, then return here.', 'ok'); }
     await refreshAuth();
     await refreshAuthProxyConfig();

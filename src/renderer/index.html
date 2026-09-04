@@ -140,6 +140,14 @@
       </div>
     </dialog>
 
+    <dialog id="signout-dialog" class="popout confirm-popout" aria-labelledby="signout-dialog-title" aria-describedby="signout-dialog-copy">
+      <div class="dialog-shell">
+        <div class="dialog-heading"><div><p class="eyebrow">Account</p><h2 id="signout-dialog-title">Sign out of Roblox?</h2></div><button class="icon-button dialog-close" type="button" data-close-dialog="signout-dialog" aria-label="Close sign-out confirmation">×</button></div>
+        <p id="signout-dialog-copy" class="muted">This clears the isolated Roblox session from Roblox Explorer. You will need to sign in again to list or manage private servers.</p>
+        <div class="form-actions confirm-actions"><button class="button ghost" type="button" data-close-dialog="signout-dialog">Cancel</button><button id="confirm-signout-button" class="button danger" type="button">Sign out</button></div>
+      </div>
+    </dialog>
+
     <script src="/renderer.js"></script>
   </body>
 </html>

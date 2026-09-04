@@ -116,6 +116,7 @@ textarea { width: 100%; resize: vertical; padding: 11px; line-height: 1.45; }
 .form-row.inline select { width: auto; min-width: 190px; }
 .optional-label { max-width: 190px; }
 .form-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.confirm-actions { justify-content: flex-end; margin-top: 4px; }
 .preview-box { padding: 11px; border-radius: 10px; color: var(--green); background: rgba(85,211,154,.08); border: 1px solid rgba(85,211,154,.2); font-size: 12px; line-height: 1.5; }
 .card-heading-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .card-heading-row h3 { font-size: 16px; }
@@ -144,6 +145,7 @@ textarea { width: 100%; resize: vertical; padding: 11px; line-height: 1.45; }
 @keyframes toast-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-7px); } }
 dialog.popout { width: min(560px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); padding: 0; color: var(--text); background: var(--surface); border: 1px solid rgba(255,255,255,.14); border-radius: 18px; box-shadow: 0 26px 80px rgba(0,0,0,.55); }
 dialog.wide-popout { width: min(850px, calc(100vw - 24px)); }
+dialog.confirm-popout { width: min(460px, calc(100vw - 24px)); }
 dialog.popout::backdrop { background: rgba(4,5,10,.72); backdrop-filter: blur(5px); }
 .dialog-shell { max-height: calc(100vh - 24px); overflow: auto; padding: 24px; }
 .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 22px; }

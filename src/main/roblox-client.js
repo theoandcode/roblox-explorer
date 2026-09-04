@@ -3,6 +3,7 @@ const {
   ValidationError,
   assertPlainObject,
   boundedString,
+  isJobId,
   normalizeExperience,
   normalizeId,
   normalizePrivateServer,
@@ -14,8 +15,10 @@ const {
 
 const ALLOWED_API_HOSTS = new Set([
   'apis.roblox.com',
+  'friends.roblox.com',
   'games.roblox.com',
   'api.rolimons.com',
+  'presence.roblox.com',
   'thumbnails.roblox.com',
   'users.roblox.com',
   'auth.roblox.com'
@@ -508,6 +511,181 @@ class ExperienceRepository {
   }
 }
 
+function normalizePresenceType(value) {
+  if (Number.isFinite(value)) return Number(value);
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (/^\d+$/.test(normalized)) return Number(normalized);
+  return { offline: 0, online: 1, website: 1, in_game: 2, ingame: 2, studio: 3 }[normalized];
+}
+
+function normalizeGameInstanceId(value) {
+  return typeof value === 'string' && isJobId(value) ? value : undefined;
+}
+
+function firstText(...values) {
+  return values.find((value) => typeof value === 'string' && value.trim())?.trim();
+}
+
+function normalizeOnlineFriend(friend, presence, profile) {
+  const friendPresence = friend?.userPresence && typeof friend.userPresence === 'object' ? friend.userPresence : undefined;
+  const presenceRecord = { ...friendPresence, ...(presence || {}) };
+  const userId = normalizeId(friend?.id ?? friend?.userId ?? presenceRecord?.userId ?? presenceRecord?.UserId);
+  if (!userId) return undefined;
+  const presenceType = normalizePresenceType(presenceRecord?.userPresenceType ?? presenceRecord?.UserPresenceType ?? presenceRecord?.presenceType ?? presenceRecord?.PresenceType ?? friend?.userPresenceType ?? friend?.UserPresenceType);
+  const gameInstanceId = normalizeGameInstanceId(presenceRecord?.gameId ?? presenceRecord?.gameInstanceId ?? presenceRecord?.gameInstanceID ?? presenceRecord?.jobId ?? friend?.gameId ?? friend?.gameInstanceId);
+  const placeId = normalizeId(presenceRecord?.placeId ?? presenceRecord?.PlaceId ?? presenceRecord?.rootPlaceId ?? presenceRecord?.RootPlaceId ?? friend?.placeId);
+  const rootPlaceId = normalizeId(presenceRecord?.rootPlaceId ?? presenceRecord?.RootPlaceId ?? presenceRecord?.placeId ?? presenceRecord?.PlaceId ?? friend?.rootPlaceId) || placeId;
+  const universeId = normalizeId(presenceRecord?.universeId ?? presenceRecord?.UniverseId ?? friend?.universeId);
+  const isPlaying = presenceType === 2 || Boolean(gameInstanceId && placeId);
+  const rawLocation = presenceRecord?.lastLocation ?? presenceRecord?.LastLocation ?? presenceRecord?.last_location ?? friend?.lastLocation;
+  const username = firstText(
+    friend?.username,
+    friend?.userName,
+    friend?.name,
+    friend?.user?.username,
+    friend?.user?.name,
+    profile?.username,
+    profile?.userName,
+    profile?.name,
+    profile?.names?.username,
+    profile?.names?.userName,
+    profile?.names?.combinedName,
+    presence?.username,
+    presence?.userName,
+    presence?.name
+  ) || 'Roblox user';
+  const displayName = firstText(
+    friend?.displayName,
+    friend?.display_name,
+    friend?.user?.displayName,
+    profile?.displayName,
+    profile?.display_name,
+    profile?.names?.displayName,
+    profile?.names?.combinedName,
+    presence?.displayName,
+    presence?.display_name,
+    username
+  ) || username;
+  return {
+    id: userId,
+    username,
+    displayName,
+    isOnline: friend?.isOnline !== false && presenceType !== 0,
+    isPlaying,
+    userPresenceType: presenceType,
+    lastLocation: typeof rawLocation === 'string' && rawLocation.trim() ? rawLocation.trim() : undefined,
+    placeId,
+    rootPlaceId,
+    universeId,
+    gameInstanceId
+  };
+}
+
+class FriendsRepository {
+  constructor(authenticatedClient, experiences) {
+    this.authenticatedClient = authenticatedClient;
+    this.experiences = experiences;
+  }
+
+  async getCurrentUser({ cache = true } = {}) {
+    const options = cache ? { cacheTtlMs: 60000 } : {};
+    const payload = await this.authenticatedClient.request('https://users.roblox.com', '/v1/users/authenticated', options);
+    const id = normalizeId(payload?.id ?? payload?.userId);
+    if (!id) throw new RobloxApiError('Roblox did not return the signed-in user identity', { code: 'SCHEMA_ERROR', host: 'users.roblox.com' });
+    return { id, username: payload?.name, displayName: payload?.displayName };
+  }
+
+  async listOnline({ cache = false } = {}) {
+    const user = await this.getCurrentUser({ cache: true });
+    const options = cache ? { cacheTtlMs: 4000 } : {};
+    const payload = await this.authenticatedClient.request('https://friends.roblox.com', `/v1/users/${user.id}/friends/online?sortOrder=Asc&limit=100`, options);
+    const candidates = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.friends) ? payload.friends : Array.isArray(payload) ? payload : [];
+    const friends = candidates.filter((item) => item && typeof item === 'object');
+    const userIds = [...new Set(friends.map((friend) => normalizeId(friend.id ?? friend.userId)).filter(Boolean))];
+    const profiles = new Map();
+    for (let index = 0; index < userIds.length; index += 50) {
+      const batch = userIds.slice(index, index + 50);
+      let profileEntries = [];
+      try {
+        const profilePayload = await this.authenticatedClient.request('https://users.roblox.com', '/v1/users', {
+          method: 'POST',
+          body: { userIds: batch.map((id) => Number(id)) },
+          retry: false
+        });
+        profileEntries = Array.isArray(profilePayload?.data) ? profilePayload.data : [];
+      } catch {
+        // The profile endpoint below is the preferred compatibility path for
+        // accounts where the legacy Users API is unavailable.
+      }
+      const addProfiles = (entries) => {
+        for (const profile of entries) {
+          const id = normalizeId(profile?.id ?? profile?.userId);
+          if (id) profiles.set(id, profile);
+        }
+      };
+      addProfiles(profileEntries);
+      const unresolvedProfileIds = batch.filter((id) => {
+        const profile = profiles.get(id);
+        return !profile || !firstText(profile.name, profile.username, profile.displayName, profile.names?.combinedName);
+      });
+      if (unresolvedProfileIds.length) {
+        try {
+          const profilePayload = await this.authenticatedClient.request('https://apis.roblox.com', '/user-profile-api/v1/user/profiles/get-profiles', {
+            method: 'POST',
+            body: { fields: ['names.combinedName'], userIds: unresolvedProfileIds.map((id) => Number(id)) },
+            retry: false
+          });
+          profileEntries = Array.isArray(profilePayload?.profileDetails)
+            ? profilePayload.profileDetails
+            : Array.isArray(profilePayload?.data) ? profilePayload.data : [];
+          addProfiles(profileEntries);
+        } catch {
+          // The friends endpoint can return IDs even when profile lookup is
+          // temporarily unavailable; presence and join selectors remain useful.
+        }
+      }
+    }
+    const presences = new Map();
+    // The presence endpoint accepts bounded batches. Keep the request in the
+    // main process and preserve string IDs at the app boundary.
+    for (let index = 0; index < userIds.length; index += 50) {
+      const batch = userIds.slice(index, index + 50);
+      const presencePayload = await this.authenticatedClient.request('https://presence.roblox.com', '/v1/presence/users', {
+        method: 'POST',
+        body: { userIds: batch.map((id) => Number(id)) },
+        retry: false
+      });
+      const entries = Array.isArray(presencePayload?.userPresences) ? presencePayload.userPresences : Array.isArray(presencePayload?.data) ? presencePayload.data : [];
+      for (const entry of entries) {
+        const id = normalizeId(entry?.userId);
+        if (id) presences.set(id, entry);
+      }
+    }
+
+    let data = friends.map((friend) => {
+      const id = normalizeId(friend.id ?? friend.userId);
+      return normalizeOnlineFriend(friend, presences.get(id), profiles.get(id));
+    }).filter(Boolean).filter((friend) => friend.isOnline);
+    const universeIds = [...new Set(data.map((friend) => friend.universeId).filter(Boolean))];
+    if (this.experiences && universeIds.length) {
+      try {
+        const details = await this.experiences.getMany(universeIds.slice(0, 50));
+        const byUniverseId = new Map(details.map((experience) => [experience.universeId, experience]));
+        data = data.map((friend) => {
+          const experience = byUniverseId.get(friend.universeId);
+          return experience ? { ...friend, experience } : friend;
+        });
+      } catch {
+        // Presence remains useful with lastLocation and IDs when metadata is
+        // temporarily unavailable or restricted.
+      }
+    }
+    data.sort((left, right) => Number(right.isPlaying) - Number(left.isPlaying) || left.displayName.localeCompare(right.displayName));
+    return { data, fetchedAt: new Date().toISOString() };
+  }
+}
+
 function privateSessionUnavailable(cause) {
   return new RobloxApiError(
     'Roblox did not expose enough private-session data to join this server safely. No public server was opened.',
@@ -743,6 +921,7 @@ function createApiClients({ fetchImpl, authFetch, authSession } = {}) {
   return {
     anonymous,
     authenticated,
+    friends: new FriendsRepository(authenticated, experiences),
     search,
     discovery: new ExperienceDiscoveryProvider(anonymous, experiences, { chartFallbackEnabled: true }),
     experiences,
@@ -759,10 +938,12 @@ module.exports = {
   ExperienceSearchProvider,
   ExperienceDiscoveryProvider,
   ExperienceRepository,
+  FriendsRepository,
   ServerRepository,
   flattenSearchResults,
   flattenDiscoveryResults,
   normalizePrivatePage,
+  normalizeOnlineFriend,
   redactPrivateServer,
   redactPrivatePage,
   createApiClients

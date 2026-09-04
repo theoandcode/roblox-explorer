@@ -5,12 +5,19 @@ Roblox Explorer is a **vibe-coded**, cross-platform Electron client for explorin
 ## Explore and play
 
 - Browse recently played and favorited experiences from Home.
+- See online friends and the experience they are playing from the top Home rail; join an available exact friend session or refresh the list manually.
 - Search experiences by name and open a details page with thumbnails, player counts, and public servers.
 - Browse top charts from Roblox's Explore API, with a bounded read-only catalog fallback when Roblox returns chart metadata without game rows.
 - Join a public server or an accessible private server through the installed Roblox Player.
 - Use the `roblox:` protocol for the final handoff; Roblox Player applies the account's admission and permission rules.
 
 Public browsing, thumbnails, public servers, and code-based joins work without signing in. Experience details first use the anonymous Games API and, when Roblox returns its restricted placeholder response, retry through the isolated signed-in session or resolve a recent card through public search before falling back to saved metadata. The Roblox Player must already be installed and registered for the `roblox:` protocol.
+
+The **Friends online** rail requires the isolated Roblox session. It refreshes
+while Home is visible (ten seconds by default) and only offers **Join
+session** when Roblox returns both the friend's current place and exact public
+server ID; otherwise it keeps the friend visible but reports that the session
+is unavailable.
 
 When Roblox's Explore chart endpoint returns only a descriptor, the home rail
 uses the read-only Rolimons catalog as a compatibility fallback, then resolves

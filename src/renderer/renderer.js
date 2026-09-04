@@ -1,6 +1,8 @@
 /* global robloxNavigator */
 
 const api = window.robloxNavigator;
+const FRIEND_POLL_INTERVAL_SECONDS = 10;
+const FRIEND_POLL_INTERVAL_MS = FRIEND_POLL_INTERVAL_SECONDS * 1000;
 const state = {
   query: '',
   searchSessionId: undefined,
@@ -28,6 +30,13 @@ const state = {
   charts: [],
   chartsLoaded: false,
   chartsError: undefined,
+  friends: [],
+  friendsLoading: false,
+  friendsError: undefined,
+  friendsFetchedAt: undefined,
+  friendsLoadPromise: undefined,
+  friendsRequestId: 0,
+  friendsPollTimer: undefined,
   homeLoadPromise: undefined,
   routeRequest: 0
 };
@@ -335,6 +344,117 @@ function renderHomeRails() {
   for (const [id, value] of recentFallback) if (!state.experienceCache.has(id)) state.experienceCache.set(id, value);
 }
 
+function friendInitials(friend) {
+  const name = String(friend?.displayName || friend?.username || '?').trim();
+  const parts = name.split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[1][0]}` : name.slice(0, 2)).toUpperCase() || '?';
+}
+
+function friendUpdatedLabel() {
+  if (!state.friendsFetchedAt) return '';
+  const date = new Date(state.friendsFetchedAt);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderFriendsRail() {
+  const row = $('friends-row');
+  const summary = $('friends-summary');
+  if (!row || !summary) return;
+  if (!state.auth.authenticated) {
+    summary.textContent = 'Sign in to see which friends are online.';
+    row.className = 'friends-strip empty-state';
+    row.innerHTML = '<p class="muted">Sign in to see which friends are online.</p>';
+    return;
+  }
+  const updated = friendUpdatedLabel();
+  if (state.friendsLoading && !state.friends.length) {
+    summary.textContent = 'Checking friends…';
+    row.className = 'friends-strip empty-state';
+    row.innerHTML = '<p class="muted">Checking who is online…</p>';
+    return;
+  }
+  if (!state.friends.length) {
+    summary.textContent = state.friendsError || 'No friends online';
+    row.className = 'friends-strip empty-state';
+    row.innerHTML = `<p class="muted">${escapeHtml(state.friendsError || 'No friends are online right now.')}</p>`;
+    return;
+  }
+  const refreshState = state.friendsLoading ? ' · refreshing…' : '';
+  const errorState = state.friendsError ? ` · ${state.friendsError}` : '';
+  summary.textContent = `${state.friends.length} online${updated ? ` · updated ${updated}` : ''}${refreshState}${errorState}`;
+  row.className = 'friends-strip';
+  row.innerHTML = state.friends.map((friend) => {
+    const metadataName = friend.experience?.name && !/^\[(?:TITLE|DESCRIPTION) UNAVAILABLE\]$/i.test(friend.experience.name) ? friend.experience.name : undefined;
+    const experienceName = metadataName || friend.lastLocation || (friend.isPlaying ? 'Playing an experience' : 'Online');
+    const activityDetail = friend.isPlaying
+      ? (friend.experience?.playerCount ? `${formatNumber(friend.experience.playerCount)} playing now` : 'Playing now')
+      : 'Online';
+    const placeId = friend.placeId || friend.rootPlaceId;
+    const joinAction = friend.gameInstanceId && placeId
+      ? button('Join session', 'secondary', `data-action="friend-join" data-place-id="${escapeHtml(placeId)}" data-game-id="${escapeHtml(friend.gameInstanceId)}"`)
+      : '<span class="muted">Session unavailable</span>';
+    const detailsAction = friend.universeId ? button('Details', 'ghost', `data-action="details" data-id="${escapeHtml(friend.universeId)}"`) : '';
+    const username = friend.username && friend.username !== friend.displayName ? `@${friend.username}` : '';
+    return `<article class="friend-card"><div class="friend-avatar" aria-hidden="true">${escapeHtml(friendInitials(friend))}</div><div class="friend-copy"><strong class="friend-name">${escapeHtml(friend.displayName || friend.username)}</strong>${username ? `<span class="friend-handle">${escapeHtml(username)}</span>` : ''}<p class="friend-activity"><strong>${escapeHtml(experienceName)}</strong><span>${escapeHtml(activityDetail)}</span></p></div><div class="friend-actions">${detailsAction}${joinAction}</div></article>`;
+  }).join('');
+}
+
+function stopFriendsPolling() {
+  if (state.friendsPollTimer) clearInterval(state.friendsPollTimer);
+  state.friendsPollTimer = undefined;
+}
+
+async function loadOnlineFriends() {
+  if (!state.auth.authenticated) {
+    state.friends = [];
+    state.friendsError = undefined;
+    state.friendsLoading = false;
+    renderFriendsRail();
+    return;
+  }
+  if (state.friendsLoadPromise) return state.friendsLoadPromise;
+  state.friendsLoading = true;
+  state.friendsError = undefined;
+  renderFriendsRail();
+  const requestId = ++state.friendsRequestId;
+  let request;
+  request = (async () => {
+    try {
+      const page = await Promise.resolve().then(() => api.listOnlineFriends({ cache: false }));
+      if (state.auth.authenticated && state.friendsRequestId === requestId) {
+        state.friends = Array.isArray(page?.data) ? page.data : [];
+        state.friendsFetchedAt = page?.fetchedAt || new Date().toISOString();
+      }
+    } catch (error) {
+      if (state.auth.authenticated && state.friendsRequestId === requestId) state.friendsError = readableError(error, 'Could not refresh online friends.');
+    } finally {
+      if (state.friendsRequestId === requestId) {
+        state.friendsLoading = false;
+        if (state.friendsLoadPromise === request) state.friendsLoadPromise = undefined;
+        renderFriendsRail();
+      }
+    }
+  })();
+  state.friendsLoadPromise = request;
+  return request;
+}
+
+function startFriendsPolling() {
+  stopFriendsPolling();
+  if (!state.auth.authenticated) {
+    renderFriendsRail();
+    return;
+  }
+  void loadOnlineFriends();
+  state.friendsPollTimer = setInterval(() => {
+    if (!state.auth.authenticated || parseRoute().name !== 'home') {
+      stopFriendsPolling();
+      return;
+    }
+    void loadOnlineFriends();
+  }, FRIEND_POLL_INTERVAL_MS);
+}
+
 async function loadHome({ force = false } = {}) {
   if (!force && state.homeLoadPromise) return state.homeLoadPromise;
   state.homeLoadPromise = (async () => {
@@ -533,6 +653,13 @@ function renderAuth() {
   $('auth-button').classList.toggle('secondary', !signedIn);
   showSection('owned-private-section', signedIn && Boolean(state.selected));
   if (!signedIn) {
+    stopFriendsPolling();
+    state.friendsRequestId += 1;
+    state.friendsLoadPromise = undefined;
+    state.friends = [];
+    state.friendsError = undefined;
+    state.friendsFetchedAt = undefined;
+    state.friendsLoading = false;
     state.privateLoading = false;
     state.privateAccessible = [];
     state.privateOwned = [];
@@ -542,6 +669,8 @@ function renderAuth() {
   }
   renderOwnedPrivateSectionState();
   updatePrivateSummary();
+  renderFriendsRail();
+  if (signedIn && parseRoute().name === 'home' && !state.friendsPollTimer) startFriendsPolling();
 }
 
 function renderOwnedPrivateSectionState() {
@@ -796,9 +925,11 @@ async function renderRoute() {
     state.selected = undefined;
     state.details = undefined;
     setActivePage('home');
+    startFriendsPolling();
     await loadHome();
     return;
   }
+  stopFriendsPolling();
   if (route.name === 'search') {
     state.routeRequest += 1;
     setActivePage('search');
@@ -824,6 +955,10 @@ document.addEventListener('click', async (event) => {
   if (action === 'details') navigate(`/experience/${target.dataset.id}`);
   else if (action === 'play') await launch({ placeId: target.dataset.placeId });
   else if (action === 'server-join') await launch({ placeId: target.dataset.placeId, gameInstanceId: target.dataset.jobId });
+  else if (action === 'friend-join') {
+    if (!target.dataset.placeId || !target.dataset.gameId) { setMessage('This friend no longer has a joinable session. Refresh friends and try again.'); return; }
+    await launch({ placeId: target.dataset.placeId, gameInstanceId: target.dataset.gameId });
+  }
   else if (action === 'favorite') {
     try {
       const response = await api.toggleFavorite({ universeId: target.dataset.id });
@@ -881,6 +1016,7 @@ $('refresh-servers-button').addEventListener('click', () => listPublicServers())
 $('exclude-full-checkbox').addEventListener('change', () => listPublicServers());
 $('load-more-servers-button').addEventListener('click', () => listPublicServers(state.publicCursor));
 $('refresh-charts-button').addEventListener('click', () => { state.chartsLoaded = false; state.chartsError = undefined; renderHomeRails(); void loadHome({ force: true }); });
+$('refresh-friends-button').addEventListener('click', () => { void loadOnlineFriends(); });
 $('open-private-button').addEventListener('click', () => {
   if (!state.selected) return;
   if (!state.auth.authenticated) { setMessage('Sign in to manage your private servers.'); return; }

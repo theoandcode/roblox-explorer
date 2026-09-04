@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('robloxNavigator', {
   getExperience: (input) => invoke('get-experience', input),
   getExperienceThumbnails: (input) => invoke('get-experience-thumbnails', input),
   getTopCharts: () => invoke('get-top-charts'),
+  listOnlineFriends: (input) => invoke('list-online-friends', input),
   listPublicServers: (input) => invoke('list-public-servers', input),
   join: (input) => invoke('join', input),
   parsePrivateLink: (input) => invoke('parse-private-link', input),

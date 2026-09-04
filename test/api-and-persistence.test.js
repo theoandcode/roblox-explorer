@@ -10,6 +10,7 @@ const {
   ExperienceSearchProvider,
   ExperienceDiscoveryProvider,
   ExperienceRepository,
+  FriendsRepository,
   flattenDiscoveryResults,
   ServerRepository,
   TtlCache,
@@ -232,6 +233,87 @@ test('hydrates a recent item from search when both Games responses are restricte
   assert.equal(result.name, 'Recovered experience');
   assert.equal(result.rootPlaceId, '456');
   assert.equal(result.playerCount, 17);
+});
+
+test('lists online friends with exact public-session selectors', async () => {
+  const requests = [];
+  let presenceBody;
+  let profileBody;
+  const fetchImpl = async (url, options = {}) => {
+    const request = String(url);
+    requests.push(request);
+    if (request.includes('/v1/users/authenticated')) return response(200, { id: 42, name: 'current-user', displayName: 'Current User' });
+    if (request.endsWith('users.roblox.com/v1/users')) {
+      profileBody = JSON.parse(options.body);
+      return response(200, { data: profileBody.userIds.map((id) => ({ id, name: id === 7 ? 'ada_username' : 'grace_username', displayName: id === 7 ? 'Ada' : 'Grace' })) });
+    }
+    if (request.includes('/friends/online')) return response(200, {
+      data: [
+        { id: 7 },
+        { id: 8 }
+      ]
+    });
+    if (request.includes('presence.roblox.com/v1/presence/users')) {
+      presenceBody = JSON.parse(options.body);
+      return response(200, {
+        userPresences: [
+          { userId: 7, userPresenceType: 2, lastLocation: 'Obby World', placeId: 1818, rootPlaceId: 1818, universeId: 1919, gameId: 'f5b4b707-d397-4c6d-8484-50847584c1b8' },
+          { userId: 8, userPresenceType: 1, lastLocation: 'Website' }
+        ]
+      });
+    }
+    throw new Error(`unexpected URL: ${request}`);
+  };
+  const repository = new FriendsRepository(new RobloxApiClient({ fetchImpl }));
+  const page = await repository.listOnline();
+  assert.deepEqual(profileBody, { userIds: [7, 8] });
+  assert.deepEqual(presenceBody, { userIds: [7, 8] });
+  assert.equal(requests.length, 4);
+  assert.equal(page.data.length, 2);
+  assert.equal(page.data[0].id, '7');
+  assert.equal(page.data[0].username, 'ada_username');
+  assert.equal(page.data[0].displayName, 'Ada');
+  assert.equal(page.data[0].isPlaying, true);
+  assert.equal(page.data[0].placeId, '1818');
+  assert.equal(page.data[0].gameInstanceId, 'f5b4b707-d397-4c6d-8484-50847584c1b8');
+  assert.equal(page.data[1].isPlaying, false);
+  assert.equal(page.data[1].username, 'grace_username');
+  assert.equal(page.data[1].lastLocation, 'Website');
+});
+
+test('resolves names through the profile API when the legacy user lookup is unavailable', async () => {
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    const request = String(url);
+    requests.push(request);
+    if (request.includes('/v1/users/authenticated')) return response(200, { id: 42 });
+    if (request.includes('friends.roblox.com/v1/users/42/friends/online')) return response(200, {
+      data: [{
+        id: 7,
+        userPresence: {
+          UserPresenceType: 'InGame',
+          lastLocation: 'Obby World',
+          placeId: 1818,
+          rootPlaceId: 1818,
+          universeId: 1919,
+          gameInstanceId: 'f5b4b707-d397-4c6d-8484-50847584c1b8'
+        }
+      }]
+    });
+    if (request.endsWith('users.roblox.com/v1/users')) return response(503, { errors: [{ message: 'temporarily unavailable' }] });
+    if (request.includes('apis.roblox.com/user-profile-api/v1/user/profiles/get-profiles')) {
+      assert.deepEqual(JSON.parse(options.body), { fields: ['names.combinedName'], userIds: [7] });
+      return response(200, { profileDetails: [{ userId: 7, names: { combinedName: 'Ada' } }] });
+    }
+    if (request.includes('presence.roblox.com/v1/presence/users')) return response(200, { userPresences: [] });
+    throw new Error(`unexpected URL: ${request}`);
+  };
+  const page = await new FriendsRepository(new RobloxApiClient({ fetchImpl })).listOnline();
+  assert.equal(page.data.length, 1);
+  assert.equal(page.data[0].displayName, 'Ada');
+  assert.equal(page.data[0].username, 'Ada');
+  assert.equal(page.data[0].gameInstanceId, 'f5b4b707-d397-4c6d-8484-50847584c1b8');
+  assert.ok(requests.some((request) => request.includes('user-profile-api/v1/user/profiles/get-profiles')));
 });
 
 test('stores private join codes encrypted when safeStorage is available', () => {

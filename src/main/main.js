@@ -447,6 +447,13 @@ function setupIpc() {
     return clients.experiences.getThumbnails(requireId(String(input.universeId ?? ''), 'universeId'));
   });
   registerHandler('get-top-charts', async () => clients.discovery.topCharts());
+  registerHandler('list-online-friends', async (input) => {
+    const options = input === undefined ? {} : assertPlainObject(input, 'online friends input');
+    optionalBoolean(options.cache, 'cache');
+    const status = await authStatus();
+    if (!status.authenticated) throw new RobloxApiError('Sign in to Roblox to view online friends', { code: 'AUTH_REQUIRED', status: 401 });
+    return clients.friends.listOnline({ cache: options.cache === true });
+  });
   registerHandler('list-public-servers', async (input) => {
     assertPlainObject(input, 'server input');
     return clients.servers.listPublic({

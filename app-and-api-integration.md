@@ -32,6 +32,7 @@ The requested features do not all use the same authentication system.
 | Join an experience or exact public server             | Yes                     | Roblox deep link            | Roblox Player applies the user's own session and access rules.                           |
 | Join a private server from an existing code           | Yes, in principle       | Roblox deep link            | The user must already possess a valid `linkCode` or `accessCode`.                        |
 | Join a listed private server without exposing a code  | Best effort             | Player-style deep link      | Roblox Player applies the signed-in account's server permissions and may deny admission. |
+| List online friends and their presence                 | No                      | Friends/presence cookie APIs | Requires an authenticated Roblox session; exact server IDs may be withheld by privacy.  |
 | List private servers accessible to the user           | No                      | Legacy cookie API           | Requires an authenticated `.ROBLOSECURITY` web session.                                  |
 | Create, rename, configure, or cancel a private server | No                      | Legacy cookie API           | Requires the cookie and CSRF handling; some actions may also require Robux/confirmation. |
 
@@ -62,6 +63,7 @@ Consequences:
 - Sign out by clearing the dedicated session partition.
 - Host-by-host connectivity diagnostics.
 - Local favorites and recent history.
+- An authenticated Home rail for online friends and their current experiences, with exact-session joins, manual refresh, and a ten-second default polling interval.
 - Local development and runtime support on Windows and macOS; Linux remains browse-only/best effort because Roblox Player has no official native Linux support.
 
 All of these capabilities belong to one implementation and acceptance phase. They may be built as parallel workstreams, but private-server management is not deferred to a later release.
@@ -289,6 +291,44 @@ For mutating legacy requests:
 
 The app must handle `401` as “session required/expired,” `403` without a CSRF header as an authorization failure, `429` with bounded exponential backoff and jitter, and `5xx` as a retryable service failure. Never log response headers containing cookies or tokens.
 
+### 5.7 Online friends and presence
+
+The Home friends rail is available only after the isolated Roblox session is
+authenticated. Resolve the current user, request the online-friends subset,
+then resolve presence in bounded batches:
+
+```http
+GET  https://users.roblox.com/v1/users/authenticated
+POST https://users.roblox.com/v1/users
+     { "userIds": [ ...friendIds ] }
+GET  https://friends.roblox.com/v1/users/{userId}/friends/online
+     ?sortOrder=Asc&limit=100
+POST https://presence.roblox.com/v1/presence/users
+     { "userIds": [ ...friendIds ] }
+```
+
+The online-friends endpoint can return only friend IDs after Roblox's Friends
+API response changes, so resolve those IDs through the Users API before
+rendering display names and usernames. The User Profile API is a compatibility
+fallback when the legacy Users API is unavailable. If both profile lookups are
+temporarily unavailable, keep the presence row but use a neutral fallback
+name.
+
+The presence response may include `userPresenceType`, `lastLocation`,
+`universeId`, `placeId`, `rootPlaceId`, and a running `gameId`. Normalize
+these into a renderer-safe friend DTO and enrich the universe IDs through the
+anonymous Games API when possible. A friend is joinable only when both a valid
+place ID and a valid `gameId` are present; hand that pair to the existing exact
+public-server launch path and never fall back to default matchmaking. Presence
+privacy and race conditions can remove the game ID, so render the friend but
+show the session as unavailable in that case.
+
+Poll only while the Home route is visible, at a default interval of ten
+seconds, and provide a user-triggered Refresh button. Do not persist presence,
+game IDs, or friend activity beyond the in-memory rail; clear it when the user
+signs out. Presence and friend requests use the authenticated session only and
+never expose cookies or unrestricted URLs to the renderer.
+
 ## 6. Authentication design
 
 ### 6.1 Anonymous mode is the default
@@ -435,6 +475,7 @@ Expose one method per operation, never raw `ipcRenderer`:
 interface RobloxNavigatorBridge {
   searchExperiences(input: SearchInput): Promise<SearchPage>;
   getExperience(universeId: Id): Promise<ExperienceDetails>;
+  listOnlineFriends(input?: { cache?: boolean }): Promise<OnlineFriendPage>;
   listPublicServers(input: PublicServerInput): Promise<ServerPage>;
   join(input: JoinIntent): Promise<LaunchReceipt>;
   parsePrivateServerLink(input: string): Promise<ParsedPrivateJoin>;
@@ -466,6 +507,9 @@ interface ServerRepository {
   listPrivate(input: PrivateServerInput): Promise<PrivateServerPage>;
   updatePrivate(input: PrivateServerUpdate): Promise<PrivateServer>;
 }
+interface FriendsRepository {
+  listOnline(): Promise<OnlineFriendPage>;
+}
 interface PlayerLauncher {
   launch(intent: JoinIntent): Promise<LaunchReceipt>;
 }
@@ -489,6 +533,9 @@ Suggested cache TTLs: search 60 seconds, experience details 5 minutes, thumbnail
 Allow outbound HTTPS only to the minimum required hosts:
 
 - `apis.roblox.com`;
+- `users.roblox.com`;
+- `friends.roblox.com`;
+- `presence.roblox.com`;
 - `games.roblox.com`;
 - `api.rolimons.com` (read-only chart fallback only);
 - `thumbnails.roblox.com`;
@@ -608,6 +655,7 @@ Authenticated contract tests use a dedicated test account and run only in a prot
 7. When login is reachable, the user can sign in through official Roblox content, the sign-in window closes after authentication, renderer auth state refreshes automatically, private servers can be listed, a non-purchase setting can be updated, and the user can sign out without exposing session secrets to the renderer.
 8. When login is not reachable, private-server management is disabled with an honest external-blocker explanation; anonymous browsing and code-based private joins continue to work.
 9. A private-server row without a resolvable private-session selector produces `PRIVATE_SESSION_UNAVAILABLE` and never hands a place-only matchmaking URI to Roblox Player.
+10. When signed in, Home shows online friends, refreshes their presence every ten seconds by default, supports manual refresh, and only joins a friend when an exact place/job pair is present.
 
 ## 14. Single-phase delivery plan
 

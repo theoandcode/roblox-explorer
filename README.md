@@ -62,6 +62,13 @@ The same value can be set or cleared from **Settings → Roblox login proxy**. L
 
 The proxy is applied only to the isolated Roblox login session while sign-in is in progress, then removed after authentication. Anonymous API requests and private-server API calls remain direct. Use a proxy you trust because it can observe connection metadata. This is a network-reachability workaround, not a way to bypass Roblox account permissions, paid access, moderation, or private-server admission rules.
 
+The repository includes a local `.env` with the default proxy above. `npm start`
+and the build commands load `.env` with `dotenv-cli`, falling back to
+`.env.example`; shell variables take precedence. Use
+`ROBLOX_NAVIGATOR_ENV_FILE=/path/to/file.env` with a build command to select a
+different environment file. Environment files are never bundled into packaged
+artifacts, so do not put credentials or other secrets in them.
+
 ## Run locally
 
 ```sh
@@ -76,11 +83,29 @@ npm test
 npm run check
 ```
 
+## Build locally
+
+`electron-builder` is configured for macOS DMG, Windows NSIS, and Linux
+AppImage/deb artifacts. The build wrapper uses `dotenv-cli` to load `.env` (or
+`.env.example` when `.env` is absent) and forwards its variables to the
+builder:
+
+```sh
+npm run build:mac
+npm run build:win
+npm run build:linux
+npm run build:all
+```
+
+`npm run build` targets the current host. Cross-platform builds may require a
+native runner or the platform's signing/build tooling; artifacts are written
+to `dist/` and are not published automatically.
+
 ## Support and limitations
 
 - Windows and macOS are the primary development targets.
 - Linux browsing is best effort because Roblox Player has no official native Linux client.
 - The renderer does not embed Roblox pages or automate passwords, MFA, CAPTCHA, or purchases.
-- Installers, signing, notarization, app-store submission, auto-updates, and public distribution are outside this development phase.
+- Signing, notarization, app-store submission, auto-updates, and public distribution are outside this development phase; local unsigned artifacts are supported.
 
 See [app-and-api-integration.md](app-and-api-integration.md) for the API contract, Electron integration, security model, and acceptance criteria.

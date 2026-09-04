@@ -555,11 +555,18 @@ Provide “Clear browsing data,” “Forget saved private servers,” and “Si
 
 | OS                                  | Browse    | Player handoff                                   | Packaging notes                                                                                                       |
 | ----------------------------------- | --------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| Windows 10/11                       | Supported | Supported when Roblox Player registers `roblox:` | Sign installer; test standard and Microsoft Store installations where applicable.                                     |
-| macOS supported by current Electron | Supported | Supported when Roblox Player registers `roblox:` | Local development is in scope; persistent Keychain/cookie behavior may vary until a future build is signed/notarized. |
-| Linux                               | Supported | Best effort only                                 | Roblox Player has no official native Linux support; never bundle or endorse an unofficial compatibility layer.        |
+| Windows 10/11                       | Supported | Supported when Roblox Player registers `roblox:` | Local unsigned NSIS build; signing and Store distribution remain out of scope.                                         |
+| macOS supported by current Electron | Supported | Supported when Roblox Player registers `roblox:` | Local unsigned DMG build; persistent Keychain/cookie behavior may vary until a future build is signed/notarized.      |
+| Linux                               | Supported | Best effort only                                 | Local AppImage/deb build; Roblox Player has no official native Linux support.                                         |
 
 Build x64 and arm64 where both Electron and Roblox Player support the combination. The UI must not equate Electron platform support with Roblox Player platform support.
+
+The repository's `scripts/build.js` wrapper invokes `dotenv-cli` before running
+electron-builder. `npm run build:mac`, `npm run build:win`, and
+`npm run build:linux` select one target; `npm run build:all` requests all three,
+and `npm run build` selects the current host. Environment files are build-time
+inputs only and are not copied into packaged artifacts; they must contain only
+non-secret settings.
 
 ## 13. Testing strategy
 
@@ -656,7 +663,7 @@ The single phase is complete when:
 6. endpoint drift, expired authentication, a missing Player handler, and partial host blocking each produce an actionable error;
 7. unit, contract, Electron security, and secret-redaction tests pass.
 
-Installers, signing, notarization, app-store submission, auto-update, and public distribution are explicitly outside this phase.
+Local unsigned installers are included in this phase. Signing, notarization, app-store submission, auto-update, and public distribution are explicitly outside it.
 
 ## 15. Decisions and open questions
 

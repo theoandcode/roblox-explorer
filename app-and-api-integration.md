@@ -13,7 +13,7 @@ The application should provide:
 - experience search;
 - experience details, icons, and media;
 - public-server listing and exact-server joins;
-- joining a private server from a link/access code supplied by the user;
+- joining a private server from a link/access code supplied by the user or a listed private-server row;
 - listing and managing the signed-in user's private servers when a Roblox web session can be established;
 - clear diagnostics when an API host, authentication surface, or Roblox Player is unavailable.
 
@@ -31,6 +31,7 @@ The requested features do not all use the same authentication system.
 | List public live servers                              | Yes                     | Documented legacy web API   | Uses a **place ID**, not a universe ID.                                                  |
 | Join an experience or exact public server             | Yes                     | Roblox deep link            | Roblox Player applies the user's own session and access rules.                           |
 | Join a private server from an existing code           | Yes, in principle       | Roblox deep link            | The user must already possess a valid `linkCode` or `accessCode`.                        |
+| Join a listed private server without exposing a code  | Best effort             | Player-style deep link      | Roblox Player applies the signed-in account's server permissions and may deny admission. |
 | List private servers accessible to the user           | No                      | Legacy cookie API           | Requires an authenticated `.ROBLOSECURITY` web session.                                  |
 | Create, rename, configure, or cancel a private server | No                      | Legacy cookie API           | Requires the cookie and CSRF handling; some actions may also require Robux/confirmation. |
 
@@ -39,7 +40,7 @@ Roblox's Open Cloud guidance says to prefer API-key or OAuth endpoints because l
 Consequences:
 
 1. The anonymous browsing and launch client is viable even when `www.roblox.com` is blocked.
-2. Private-server joins are viable if the user already has a code/link.
+2. Private-server joins are viable if the user already has a code/link, or if an authenticated private-server list row supplies enough context for a Player-style handoff.
 3. “My private servers” and management require a separate authenticated web-cookie session. Electron cannot safely or portably extract the installed Roblox Player's session.
 4. If every Roblox login/consent web surface is blocked and Electron has no existing valid Roblox cookie, authenticated private-server listing and management are unavailable. The UI must say this rather than silently falling back to credential or cookie scraping.
 
@@ -56,7 +57,8 @@ Consequences:
 - Sign in using a dedicated, isolated Electron browser session that loads only official Roblox HTTPS origins.
 - List private servers available for a selected place and servers owned by the current user.
 - Show private-server metadata and subscription state.
-- Rename a private server, change allowed users/friends access, regenerate its join code where supported, and change subscription state.
+- Keep accessible rows join-only; expose access and subscription controls only for servers returned by the signed-in user's own-server list.
+- Create a private server for the selected experience only after explicit purchase confirmation.
 - Sign out by clearing the dedicated session partition.
 - Host-by-host connectivity diagnostics.
 - Local favorites and recent history.
@@ -88,6 +90,7 @@ Roblox uses several identifiers that must remain distinct in the domain model:
 | `rootPlaceId` / `placeId`  | integer represented as a decimal string internally | A playable place; server listing and launch.                                                                 |
 | `jobId` / `gameInstanceId` | UUID-like string                                   | One running public server process.                                                                           |
 | `vipServerId`              | integer represented as a decimal string internally | A persistent private-server configuration/subscription.                                                      |
+| `privateServerId`           | UUID-like string                                   | Stable private-server identity used by the Player-style list handoff when the API exposes it.                 |
 | `accessCode`               | opaque string                                      | Private/reserved-server admission via deep link. Treat as a secret.                                          |
 | `linkCode`                 | opaque string                                      | Shareable private-server link code. Treat as sensitive.                                                      |
 
@@ -266,6 +269,8 @@ Additional rules:
 - “Sign out” clears cookies, storage, cache, CSRF memory, and private cached data for that partition;
 - enable Electron cookie encryption where available; note that stable OS-backed cookie/Keychain behavior for a future distributed macOS build will require signing/notarization, which is outside the current phase.
 
+When the target network blocks `www.roblox.com`, the app may support an explicitly configured trusted HTTP(S) or SOCKS proxy for the login window (for example, `ROBLOX_NAVIGATOR_AUTH_PROXY=http://127.0.0.1:8080`, or an equivalent Settings control). Electron exposes proxy configuration at the session level rather than per request, so enable it only while the isolated login window is active, detect the authenticated cookie, then switch that session back to direct networking before private-server API calls. Anonymous API traffic should remain direct unless separately configured. A proxy is a connectivity aid, not an authentication bypass, and its use must be disclosed because it can observe connection metadata.
+
 If the required login page is blocked, stop here. Do not add a raw cookie import box as a workaround.
 
 ## 7. Player protocol handoff
@@ -287,6 +292,26 @@ roblox://experiences/start?placeId={placeId}&linkCode={urlEncodedLinkCode}
 Private/reserved server by access code:
 roblox://experiences/start?placeId={placeId}&accessCode={urlEncodedAccessCode}
 ```
+
+Private-server list joins must not fail just because the list response does not
+expose a share/access code. When a row has a usable place ID but no code, use
+the Player-style attempt handoff below and let Roblox apply the signed-in
+account's permissions (the Player may report that the user is not allowed):
+
+```text
+Private-server list fallback (no code):
+roblox://experiences/start?placeId={placeId}&joinAttemptId={newUuid}&joinAttemptOrigin=privateServerListJoin
+```
+
+`joinAttemptId` and `joinAttemptOrigin` are observed Player protocol fields,
+not part of Roblox's public deep-link reference. If the private-server row
+exposes a stable UUID (`privateServerId`), reuse it as `joinAttemptId`; otherwise
+generate a fresh UUID for a best-effort attempt. Treat this as a compatibility
+fallback: preserve a code-based handoff when Roblox exposes a code for the
+selected row, but never turn a missing code into a client-side error. The app
+must not claim that the selected private server was joined; it only confirms
+that the OS accepted the handoff. The supported-field inventory is based on
+community protocol analysis ([Bloxstrap's bootstrapper deep dive](https://github.com/bloxstraplabs/bloxstrap/wiki/A-deep-dive-on-how-the-Roblox-bootstrapper-works)); Roblox's public reference still documents only the stable deep-link fields above.
 
 Compatibility fallback: if a Player build does not accept `/experiences/start`, retry only after a fresh user click with the documented legacy direct form `roblox://placeId={placeId}&...`. Keep formats in a versioned `LaunchUriBuilder`, covered by tests. Do not use the lower-level `roblox-player:` ticket protocol; it would require browser authentication tickets, exposes more sensitive material, and is less stable.
 
@@ -346,7 +371,7 @@ Primary routes:
 - `/search?q=`: search results and cursor loading;
 - `/experience/:universeId`: overview plus media;
 - `/experience/:universeId/servers`: public/private tabs;
-- `/private-servers`: saved codes and, when authenticated, owned/accessible servers;
+- `/private-servers`: saved codes and, when authenticated, join-only accessible servers plus selected-experience owner tools;
 - `/settings`: connectivity, auth state, cache, and diagnostics.
 
 ### 8.2 Preload bridge
@@ -361,6 +386,7 @@ interface RobloxNavigatorBridge {
   join(input: JoinIntent): Promise<LaunchReceipt>;
   parsePrivateServerLink(input: string): Promise<ParsedPrivateJoin>;
   getAuthStatus(): Promise<AuthStatus>;
+  onAuthStateChanged(listener: (status: AuthStatus) => void): () => void;
   beginLegacySignIn(): Promise<AuthStatus>;
   signOut(): Promise<void>;
   listPrivateServers(input: PrivateServerInput): Promise<PrivateServerPage>;
@@ -511,7 +537,7 @@ Authenticated contract tests use a dedicated test account and run only in a prot
 4. Pasting a valid private-server link extracts and joins by code without navigating to the pasted link.
 5. Missing Player registration produces a useful diagnostic rather than an unhandled error.
 6. A `401`, `429`, API schema change, and offline state each render a distinct recoverable error.
-7. When login is reachable, the user can sign in through official Roblox content, list private servers, update a non-purchase setting, and sign out without exposing session secrets to the renderer.
+7. When login is reachable, the user can sign in through official Roblox content, the sign-in window closes after authentication, renderer auth state refreshes automatically, private servers can be listed, a non-purchase setting can be updated, and the user can sign out without exposing session secrets to the renderer.
 8. When login is not reachable, private-server management is disabled with an honest external-blocker explanation; anonymous browsing and code-based private joins continue to work.
 
 ## 14. Single-phase delivery plan
@@ -548,7 +574,7 @@ Record sanitized fixtures and results immediately so the other workstreams can p
 - current-user/session verification;
 - private-server lists by place and owner;
 - metadata and subscription display;
-- rename, permissions, join-code regeneration where supported, and subscription controls;
+- permissions and subscription controls for owned servers, plus explicitly confirmed creation where enabled;
 - CSRF negotiation, session expiry, and sign-out/clear-data handling;
 - explicit confirmation for subscription or Robux-affecting actions;
 - kill switch/feature flag for legacy API drift.

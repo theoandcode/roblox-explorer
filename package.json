@@ -1,0 +1,20 @@
+{
+  "name": "roblox-navigator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An anonymous-first Electron navigator for Roblox experiences and servers.",
+  "main": "src/main/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "node scripts/ensure-electron-install.js",
+    "test": "node --test",
+    "check": "node --check scripts/ensure-electron-install.js && node --check src/main/main.js && node --check src/main/roblox-client.js && node --check src/main/launch-uri.js && node --check src/main/private-link.js && node --check src/main/persistence.js && node --check src/main/validation.js && node --check src/preload/preload.js && node --check src/renderer/renderer.js"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  },
+  "allowScripts": {
+    "electron@38.8.6": true
+  }
+}

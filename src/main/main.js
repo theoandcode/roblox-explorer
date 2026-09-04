@@ -272,7 +272,7 @@ async function createAuthWindow() {
     // through its native window controls (or the explicit sign-out cleanup).
     modal: false,
     title: 'Sign in to Roblox',
-    icon: path.resolve(__dirname, '../../avatar.jpeg'),
+    icon: path.resolve(__dirname, '../../avatar.png'),
     webPreferences: {
       session: authSession,
       nodeIntegration: false,
@@ -320,14 +320,14 @@ async function handoffToPlayer(uri) {
 
 function registerAppProtocol() {
   const rendererRoot = path.resolve(__dirname, '../renderer');
-  const avatarPath = path.resolve(__dirname, '../../avatar.jpeg');
+  const avatarPath = path.resolve(__dirname, '../../avatar.png');
   protocol.handle(APP_SCHEME, async (request) => {
     let parsed;
     try { parsed = new URL(request.url); } catch { return new Response('Bad request', { status: 400 }); }
     if (parsed.hostname !== APP_HOST) return new Response('Not found', { status: 404 });
     let requestedPath;
     try { requestedPath = decodeURIComponent(parsed.pathname === '/' ? '/index.html' : parsed.pathname); } catch { return new Response('Bad request', { status: 400 }); }
-    const isPublicAsset = requestedPath === '/avatar.jpeg';
+    const isPublicAsset = requestedPath === '/avatar.png';
     const candidate = isPublicAsset ? avatarPath : path.resolve(rendererRoot, `.${requestedPath}`);
     if (!isPublicAsset && !candidate.startsWith(`${rendererRoot}${path.sep}`)) return new Response('Forbidden', { status: 403 });
     try { return await net.fetch(pathToFileURL(candidate).toString()); } catch { return new Response('Not found', { status: 404 }); }
@@ -341,7 +341,7 @@ function createMainWindow() {
     minWidth: 960,
     minHeight: 640,
     title: APP_NAME,
-    icon: path.resolve(__dirname, '../../avatar.jpeg'),
+    icon: path.resolve(__dirname, '../../avatar.png'),
     backgroundColor: '#0f1117',
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
@@ -610,7 +610,7 @@ async function runConnectivityCheck() {
 async function bootstrap() {
   await app.whenReady();
   app.setName(APP_NAME);
-  const avatarPath = path.resolve(__dirname, '../../avatar.jpeg');
+  const avatarPath = path.resolve(__dirname, '../../avatar.png');
   if (typeof app.setAboutPanelOptions === 'function') app.setAboutPanelOptions({ applicationName: APP_NAME, applicationIcon: avatarPath });
   if (process.platform === 'darwin' && app.dock && typeof app.dock.setIcon === 'function') app.dock.setIcon(avatarPath);
   registerAppProtocol();

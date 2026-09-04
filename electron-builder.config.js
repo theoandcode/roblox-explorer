@@ -10,13 +10,17 @@ const normalizedProxy = configuredProxy ? normalizeAuthProxy(configuredProxy) ||
 module.exports = {
   appId: 'com.roblox.explorer',
   productName: 'Roblox Explorer',
+  // electron-builder needs a PNG/ICO/ICNS source for packaged application
+  // icons. Keep one PNG source for the renderer, Electron windows, and every
+  // packaged target so all surfaces share the same mark.
+  icon: 'avatar.png',
   asar: true,
   directories: {
     output: 'dist'
   },
   files: [
     'src/**/*',
-    'avatar.jpeg',
+    'avatar.png',
     'package.json',
     '!test{,/**/*}',
     '!scripts{,/**/*}',

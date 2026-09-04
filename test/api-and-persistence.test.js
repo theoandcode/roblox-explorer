@@ -381,36 +381,78 @@ test('accepts alternate private-server access-code field names', async () => {
   assert.deepEqual(result.intent, { placeId: '1818', accessCode: 'access-code' });
 });
 
-test('falls back to an official-style Player launch when a private row has no code', async () => {
+test('merges concurrent private-list records without losing a join code', async () => {
   const requests = [];
   const fetchImpl = async (url) => {
-    requests.push(String(url));
-    return response(200, { data: [{ id: 9, placeId: 1818, name: 'Accessible server' }] });
+    const request = String(url);
+    requests.push(request);
+    if (request.includes('/v1/games/')) return response(200, { data: [{ id: 9, placeId: 1818, privateServerLinkCode: 'list-link' }] });
+    if (request.includes('/v1/private-servers/my-private-servers')) return response(200, { data: [{ id: 9, placeId: 1818, name: 'Owned row without code' }] });
+    throw new Error(`unexpected URL: ${request}`);
+  };
+  const repository = new ServerRepository(new RobloxApiClient({ fetchImpl }));
+  await Promise.all([repository.listPrivateByPlace('1818'), repository.listMine()]);
+  const result = await repository.joinPrivate({ vipServerId: '9' });
+  assert.deepEqual(result.intent, { placeId: '1818', linkCode: 'list-link' });
+  assert.equal(requests.length, 2);
+});
+
+test('waits for an in-flight private list before resolving a join', async () => {
+  const requests = [];
+  let releaseOwned;
+  const ownedGate = new Promise((resolve) => { releaseOwned = resolve; });
+  const fetchImpl = async (url) => {
+    const request = String(url);
+    requests.push(request);
+    if (request.includes('/v1/games/')) return response(200, { data: [{ id: 9, placeId: 1818, privateServerLinkCode: 'list-link' }] });
+    if (request.includes('/v1/private-servers/my-private-servers')) {
+      await ownedGate;
+      return response(200, { data: [{ id: 9, placeId: 1818, name: 'Owned row without code' }] });
+    }
+    throw new Error(`unexpected URL: ${request}`);
   };
   const repository = new ServerRepository(new RobloxApiClient({ fetchImpl }));
   await repository.listPrivateByPlace('1818');
-  const result = await repository.joinPrivate({ vipServerId: '9' });
-  assert.equal(result.intent.placeId, '1818');
-  assert.match(result.intent.joinAttemptId, /^[0-9a-f-]{36}$/i);
-  assert.equal(result.intent.joinAttemptOrigin, 'privateServerListJoin');
-  assert.equal(requests.length, 1);
+  const ownedLoad = repository.listMine();
+  const join = repository.joinPrivate({ vipServerId: '9' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.some((request) => request.includes('/v1/vip-servers/9')), false);
+  releaseOwned();
+  await ownedLoad;
+  const result = await join;
+  assert.deepEqual(result.intent, { placeId: '1818', linkCode: 'list-link' });
 });
 
-test('can launch a private row with only the supplied place ID', async () => {
+test('refuses a private join when Roblox exposes no private-session code', async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    const request = String(url);
+    requests.push(request);
+    if (request.includes('/private-servers?')) return response(200, { data: [{ id: 9, placeId: 1818, name: 'Accessible server' }] });
+    return response(200, { data: { id: 9, placeId: 1818, name: 'Accessible server' } });
+  };
+  const repository = new ServerRepository(new RobloxApiClient({ fetchImpl }));
+  await repository.listPrivateByPlace('1818');
+  await assert.rejects(() => repository.joinPrivate({ vipServerId: '9' }), (error) => {
+    assert.equal(error.code, 'PRIVATE_SESSION_UNAVAILABLE');
+    assert.match(error.message, /No public server was opened/);
+    return true;
+  });
+  assert.equal(requests.length, 2);
+});
+
+test('does not launch matchmaking when only a private row place ID is supplied', async () => {
   let called = false;
-  const repository = new ServerRepository(new RobloxApiClient({ fetchImpl: async () => { called = true; return response(500, {}); } }));
-  const result = await repository.joinPrivate({ vipServerId: '9', placeId: '1818' });
-  assert.equal(called, false);
-  assert.equal(result.intent.placeId, '1818');
-  assert.equal(result.intent.joinAttemptOrigin, 'privateServerListJoin');
+  const repository = new ServerRepository(new RobloxApiClient({ fetchImpl: async () => { called = true; return response(403, {}); } }));
+  await assert.rejects(() => repository.joinPrivate({ vipServerId: '9', placeId: '1818' }), (error) => error.code === 'PRIVATE_SESSION_UNAVAILABLE');
+  assert.equal(called, true);
 });
 
-test('reuses a private-server UUID when the list exposes one', async () => {
+test('does not treat a private-server UUID as a join session', async () => {
   const fetchImpl = async () => response(200, { data: [{ id: 9, placeId: 1818, privateServerId: 'f5b4b707-d397-4c6d-8484-50847584c1b8' }] });
   const repository = new ServerRepository(new RobloxApiClient({ fetchImpl }));
   await repository.listPrivateByPlace('1818');
-  const result = await repository.joinPrivate({ vipServerId: '9' });
-  assert.equal(result.intent.joinAttemptId, 'f5b4b707-d397-4c6d-8484-50847584c1b8');
+  await assert.rejects(() => repository.joinPrivate({ vipServerId: '9' }), (error) => error.code === 'PRIVATE_SESSION_UNAVAILABLE');
 });
 
 test('does not automatically retry subscription mutations', async () => {

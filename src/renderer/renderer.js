@@ -660,7 +660,7 @@ async function saveAuthProxy(value) {
 function privateJoinButton(server) {
   const joinPlaceId = server.placeId || state.selected?.rootPlaceId;
   if (!joinPlaceId) return '';
-  const joinHint = server.hasLinkCode || server.hasAccessCode ? '' : ' title="Roblox Player will check your account permissions"';
+  const joinHint = server.hasLinkCode || server.hasAccessCode ? '' : ' title="Roblox must expose private-session data before this server can be joined"';
   return button('Join', 'secondary', `data-action="private-entry-join" data-id="${escapeHtml(server.id)}" data-place-id="${escapeHtml(joinPlaceId)}"${joinHint}`);
 }
 

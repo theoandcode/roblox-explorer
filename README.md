@@ -30,7 +30,7 @@ The **Your private servers** popout contains owner-only controls for the selecte
 
 You can also open **Join link** to parse a Roblox share link, deep link, or access code. Choose **Remember code** to save a code locally; it is encrypted with Electron `safeStorage` when the platform provides it.
 
-Private-server listing and management require signing in through the isolated official Roblox session. If a listed server does not expose a share/access code, its **Join** action still uses the official-style Player handoff and lets Roblox report any permission failure. The app never asks for a Roblox password or `.ROBLOSECURITY` cookie.
+Private-server listing and management require signing in through the isolated official Roblox session. A listed server must expose a usable private-session selector before **Join** hands anything to Roblox Player. If Roblox withholds that data, the app reports that the server cannot be joined safely and does not open a public fallback server. The app never asks for a Roblox password or `.ROBLOSECURITY` cookie.
 
 Private-server creation and subscription renewal are disabled by default because they may spend Robux. Enable them only after verifying the current authenticated request contract:
 

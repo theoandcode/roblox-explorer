@@ -356,25 +356,15 @@ Private/reserved server by access code:
 roblox://experiences/start?placeId={placeId}&accessCode={urlEncodedAccessCode}
 ```
 
-Private-server list joins must not fail just because the list response does not
-expose a share/access code. When a row has a usable place ID but no code, use
-the Player-style attempt handoff below and let Roblox apply the signed-in
-account's permissions (the Player may report that the user is not allowed):
-
-```text
-Private-server list fallback (no code):
-roblox://experiences/start?placeId={placeId}&joinAttemptId={newUuid}&joinAttemptOrigin=privateServerListJoin
-```
-
-`joinAttemptId` and `joinAttemptOrigin` are observed Player protocol fields,
-not part of Roblox's public deep-link reference. If the private-server row
-exposes a stable UUID (`privateServerId`), reuse it as `joinAttemptId`; otherwise
-generate a fresh UUID for a best-effort attempt. Treat this as a compatibility
-fallback: preserve a code-based handoff when Roblox exposes a code for the
-selected row, but never turn a missing code into a client-side error. The app
-must not claim that the selected private server was joined; it only confirms
-that the OS accepted the handoff. The supported-field inventory is based on
-community protocol analysis ([Bloxstrap's bootstrapper deep dive](https://github.com/bloxstraplabs/bloxstrap/wiki/A-deep-dive-on-how-the-Roblox-bootstrapper-works)); Roblox's public reference still documents only the stable deep-link fields above.
+Private-server list joins require a usable `linkCode` or `accessCode` from the
+list or a follow-up private-server metadata response. A place ID alone is a
+public matchmaking selector, so never construct a private join from only a
+place ID and never fabricate a `joinAttemptId`. If Roblox withholds the
+private-session data (including a `403` metadata response), stop before
+`shell.openExternal` and show `PRIVATE_SESSION_UNAVAILABLE`; no public server
+may be opened as a fallback. The app must not claim that the selected private
+server was joined; it only confirms that the OS accepted a verified private
+handoff.
 
 Compatibility fallback: if a Player build does not accept `/experiences/start`, retry only after a fresh user click with the documented legacy direct form `roblox://placeId={placeId}&...`. Keep formats in a versioned `LaunchUriBuilder`, covered by tests. Do not use the lower-level `roblox-player:` ticket protocol; it would require browser authentication tickets, exposes more sensitive material, and is less stable.
 
@@ -611,6 +601,7 @@ Authenticated contract tests use a dedicated test account and run only in a prot
 6. A `401`, `429`, API schema change, and offline state each render a distinct recoverable error.
 7. When login is reachable, the user can sign in through official Roblox content, the sign-in window closes after authentication, renderer auth state refreshes automatically, private servers can be listed, a non-purchase setting can be updated, and the user can sign out without exposing session secrets to the renderer.
 8. When login is not reachable, private-server management is disabled with an honest external-blocker explanation; anonymous browsing and code-based private joins continue to work.
+9. A private-server row without a resolvable private-session selector produces `PRIVATE_SESSION_UNAVAILABLE` and never hands a place-only matchmaking URI to Roblox Player.
 
 ## 14. Single-phase delivery plan
 

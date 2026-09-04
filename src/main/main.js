@@ -401,6 +401,17 @@ function validateLaunchFormat(value) {
   return value || 'modern';
 }
 
+function requirePrivateJoinIntent(intent) {
+  const kind = classifyJoinIntent(intent);
+  if (!['private-link', 'private-access', 'private-server'].includes(kind)) {
+    throw new RobloxApiError(
+      'Roblox did not return a private-session selector. No public server was opened.',
+      { code: 'PRIVATE_SESSION_UNAVAILABLE', host: 'games.roblox.com' }
+    );
+  }
+  return kind;
+}
+
 function validateAuthProxyInput(input) {
   assertPlainObject(input, 'auth proxy input');
   const raw = input.proxy === undefined ? '' : boundedString(input.proxy, 'proxy', 512).trim();
@@ -554,9 +565,10 @@ function setupIpc() {
     const placeId = input.placeId === undefined ? undefined : requireId(String(input.placeId), 'placeId');
     const format = validateLaunchFormat(input.format);
     const { intent } = await clients.servers.joinPrivate({ vipServerId, placeId });
+    const kind = requirePrivateJoinIntent(intent);
     const uri = buildLaunchUri(intent, format);
     await handoffToPlayer(uri);
-    return { accepted: true, format, kind: classifyJoinIntent(intent), uri: uri.replace(/(linkCode|accessCode)=[^&]+/g, '$1=[redacted]') };
+    return { accepted: true, format, kind, uri: uri.replace(/(linkCode|accessCode)=[^&]+/g, '$1=[redacted]') };
   });
   registerHandler('create-private-server', async (input) => {
     assertPlainObject(input, 'private server input');

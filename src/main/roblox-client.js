@@ -9,8 +9,7 @@ const {
   normalizeServer,
   normalizeThumbnail,
   optionalBoolean,
-  requireId,
-  UUID_PATTERN
+  requireId
 } = require('./validation');
 
 const ALLOWED_API_HOSTS = new Set([
@@ -509,6 +508,26 @@ class ExperienceRepository {
   }
 }
 
+function privateSessionUnavailable(cause) {
+  return new RobloxApiError(
+    'Roblox did not expose enough private-session data to join this server safely. No public server was opened.',
+    { code: 'PRIVATE_SESSION_UNAVAILABLE', status: cause?.status, host: 'games.roblox.com' }
+  );
+}
+
+function mergePrivateServerRecord(existing, incoming) {
+  if (!existing) return incoming;
+  const merged = { ...existing, ...incoming };
+  for (const field of ['privateServerId', 'placeId', 'universeId', 'ownerId', 'active', 'friendsAllowed', 'subscription', 'linkCode', 'accessCode']) {
+    if (incoming[field] === undefined || incoming[field] === null) merged[field] = existing[field];
+  }
+  if ((!Array.isArray(incoming.users) || incoming.users.length === 0) && Array.isArray(existing.users) && existing.users.length) {
+    merged.users = existing.users;
+  }
+  if (incoming.name === 'Private server' && existing.name && existing.name !== 'Private server') merged.name = existing.name;
+  return merged;
+}
+
 class ServerRepository {
   constructor(client, authenticatedClient) {
     this.client = client;
@@ -517,15 +536,38 @@ class ServerRepository {
     // The renderer receives only redacted flags, but a list response may be
     // the only place Roblox exposes a usable link/access code for a server.
     this.privateServerRecords = new Map();
+    // Details and list requests are started in parallel by the renderer. Keep
+    // joins behind those requests so a click cannot observe a half-hydrated
+    // record and fall back to a place-only public launch.
+    this.pendingPrivateLoads = new Set();
   }
 
   rememberPrivatePage(page) {
-    for (const server of page?.data || []) this.privateServerRecords.set(server.id, server);
+    for (const server of page?.data || []) {
+      const existing = this.privateServerRecords.get(server.id);
+      this.privateServerRecords.set(server.id, mergePrivateServerRecord(existing, server));
+    }
     return page;
   }
 
   clearPrivateCache() {
     this.privateServerRecords.clear();
+  }
+
+  async trackPrivateLoad(operation) {
+    const pending = Promise.resolve().then(operation);
+    this.pendingPrivateLoads.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.pendingPrivateLoads.delete(pending);
+    }
+  }
+
+  async waitForPrivateLoads() {
+    while (this.pendingPrivateLoads.size) {
+      await Promise.allSettled([...this.pendingPrivateLoads]);
+    }
   }
 
   async listPublic({ placeId, sortOrder = 'Asc', limit = 25, cursor, excludeFullGames = true }) {
@@ -542,52 +584,47 @@ class ServerRepository {
 
   async listPrivateByPlace(placeId) {
     const id = requireId(String(placeId), 'placeId');
-    const payload = await this.authenticatedClient.request('https://games.roblox.com', `/v1/games/${id}/private-servers?limit=100`, { cacheTtlMs: 30000 });
-    return this.rememberPrivatePage(normalizePrivatePage(payload));
+    return this.trackPrivateLoad(async () => {
+      const payload = await this.authenticatedClient.request('https://games.roblox.com', `/v1/games/${id}/private-servers?limit=100`, { cacheTtlMs: 30000 });
+      return this.rememberPrivatePage(normalizePrivatePage(payload));
+    });
   }
 
   async getPrivate(vipServerId, { cache = true } = {}) {
     const id = requireId(String(vipServerId), 'vipServerId');
     const payload = await this.authenticatedClient.request('https://games.roblox.com', `/v1/vip-servers/${id}`, cache ? { cacheTtlMs: 30000 } : {});
     const server = normalizePrivateServer(payload?.data || payload);
-    this.privateServerRecords.set(server.id, server);
-    return server;
+    const merged = mergePrivateServerRecord(this.privateServerRecords.get(server.id), server);
+    this.privateServerRecords.set(server.id, merged);
+    return merged;
   }
 
   async joinPrivate({ vipServerId, placeId }) {
     const id = requireId(String(vipServerId), 'vipServerId');
-    const cached = this.privateServerRecords.get(id);
     const requestedPlaceId = placeId === undefined ? undefined : requireId(String(placeId), 'placeId');
-    // Prefer a code from the list response. Roblox can return 403 for the
-    // metadata endpoint even when the signed-in user may join the server.
-    // A place ID from the list is enough for the official-style fallback, so
-    // do not make a second metadata request merely because no code was shown.
+    await this.waitForPrivateLoads();
+    const cached = this.privateServerRecords.get(id);
+    // Prefer a code from the list response. If the list redacts it, resolve
+    // the private-server metadata before launching. A place ID by itself is
+    // only a public matchmaking selector and must never be used as a private
+    // server fallback.
     let server = cached;
     let resolvedPlaceId = cached?.placeId || requestedPlaceId;
-    if (!server && !resolvedPlaceId) {
-      server = await this.getPrivate(id, { cache: false });
-      resolvedPlaceId = server.placeId || requestedPlaceId;
+    const hasJoinCode = Boolean(cached?.linkCode || cached?.accessCode);
+    if (!server || !hasJoinCode) {
+      try {
+        const resolved = await this.getPrivate(id, { cache: false });
+        server = resolved;
+        resolvedPlaceId = resolved.placeId || resolvedPlaceId;
+      } catch (error) {
+        throw privateSessionUnavailable(error);
+      }
     }
-    if (!server) server = { id, placeId: resolvedPlaceId };
     if (!resolvedPlaceId) resolvedPlaceId = server.placeId;
-    if (!resolvedPlaceId) throw new ValidationError('The private server response did not include a place ID');
+    if (!resolvedPlaceId) throw privateSessionUnavailable();
     if (server.linkCode || cached?.linkCode) return { server, intent: { placeId: resolvedPlaceId, linkCode: server.linkCode || cached.linkCode } };
     if (server.accessCode || cached?.accessCode) return { server, intent: { placeId: resolvedPlaceId, accessCode: server.accessCode || cached.accessCode } };
-    // Roblox's own private-server list can launch Player without exposing a
-    // share/access code. The Player then applies the signed-in account's
-    // permissions and may show its own “no permission” result. Keep the
-    // attempt ID opaque and short-lived; it is not a server credential.
-    return {
-      server,
-      intent: {
-        placeId: resolvedPlaceId,
-        // The private-server list can expose the stable UUID used by the
-        // Roblox client. If it is absent, generate a normal attempt UUID so
-        // the Player still receives the same no-code handoff shape.
-        joinAttemptId: UUID_PATTERN.test(server.privateServerId || '') ? server.privateServerId : randomUUID(),
-        joinAttemptOrigin: 'privateServerListJoin'
-      }
-    };
+    throw privateSessionUnavailable();
   }
 
   async isPrivateEnabled(universeId) {
@@ -617,14 +654,16 @@ class ServerRepository {
   }
 
   async listMine() {
-    try {
-      const payload = await this.authenticatedClient.request('https://games.roblox.com', '/v1/private-servers/my-private-servers?limit=100', { cacheTtlMs: 30000, retry: false });
-      return this.rememberPrivatePage(normalizePrivatePage(payload));
-    } catch (error) {
-      if (![404, 405, 501].includes(error.status)) throw error;
-      const payload = await this.authenticatedClient.request('https://games.roblox.com', '/v1/vip-servers/my-private-servers?limit=100', { cacheTtlMs: 30000 });
-      return this.rememberPrivatePage(normalizePrivatePage(payload));
-    }
+    return this.trackPrivateLoad(async () => {
+      try {
+        const payload = await this.authenticatedClient.request('https://games.roblox.com', '/v1/private-servers/my-private-servers?limit=100', { cacheTtlMs: 30000, retry: false });
+        return this.rememberPrivatePage(normalizePrivatePage(payload));
+      } catch (error) {
+        if (![404, 405, 501].includes(error.status)) throw error;
+        const payload = await this.authenticatedClient.request('https://games.roblox.com', '/v1/vip-servers/my-private-servers?limit=100', { cacheTtlMs: 30000 });
+        return this.rememberPrivatePage(normalizePrivatePage(payload));
+      }
+    });
   }
 
   async updatePrivate({ vipServerId, operation, payload }) {

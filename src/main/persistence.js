@@ -1,15 +1,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { isId } = require('./validation');
+const { isId, normalizeExperience } = require('./validation');
 
 function normalizeRecent(value) {
   if (!value || typeof value !== 'object' || !isId(value.universeId) || !isId(value.rootPlaceId)) return null;
-  return {
-    universeId: value.universeId,
-    rootPlaceId: value.rootPlaceId,
-    name: typeof value.name === 'string' ? value.name.slice(0, 200) : 'Untitled experience',
-    iconUrl: typeof value.iconUrl === 'string' ? value.iconUrl : undefined
-  };
+  try {
+    const experience = normalizeExperience(value);
+    return {
+      ...experience,
+      name: experience.name.slice(0, 200),
+      description: experience.description.slice(0, 4000),
+      thumbnailUrls: experience.thumbnailUrls.slice(0, 10)
+    };
+  } catch {
+    return null;
+  }
 }
 
 function normalizeSettings(value) {

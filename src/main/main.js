@@ -423,16 +423,10 @@ function setupIpc() {
   registerHandler('get-experience', async (input) => {
     assertPlainObject(input, 'experience input');
     const universeId = requireId(String(input.universeId ?? ''), 'universeId');
+    optionalBoolean(input.cache, 'cache');
     const fallback = input.fallback && typeof input.fallback === 'object' ? input.fallback : undefined;
-    const experience = await clients.experiences.getOne(universeId, fallback);
-    if (input.recordRecent !== false) {
-      store.recordRecent({
-        universeId: experience.universeId,
-        rootPlaceId: experience.rootPlaceId,
-        name: experience.name,
-        iconUrl: experience.iconUrl
-      });
-    }
+    const experience = await clients.experiences.getOne(universeId, fallback, { cache: input.cache !== false });
+    if (input.recordRecent !== false) store.recordRecent(experience);
     return experience;
   });
   registerHandler('get-experience-thumbnails', async (input) => {

@@ -1,7 +1,7 @@
 # Roblox Explorer: application and API integration specification
 
 Status: approved  
-Last verified: 2026-09-03  
+Last verified: 2026-09-04
 Working title: **Roblox Explorer**
 
 ## 1. Purpose
@@ -146,16 +146,34 @@ GET https://apis.roblox.com/explore-api/v1/get-sort-content
     ?device=computer&country=all&sessionId={UUID}&sortId={opaque}
 ```
 
-These routes carry the same undocumented/compatibility risk as search.
+These routes carry the same undocumented/compatibility risk as search. A live
+`curl` probe on 2026-09-04 found that `get-sorts` returned only the
+`filters_v5` descriptor (with a continuation token), while
+`get-sort-content?sortId=top-playing-now` returned a `Games` descriptor with no
+`content`, `contents`, `games`, or `gameSet` rows. The deprecated
+`games.roblox.com/v1/games/sorts` and `/v1/games/list` routes returned HTTP 404.
+An empty array in this situation therefore means “the response has no game
+rows,” not “the adapter rejected every game.”
 
-The renderer treats discovery as a best-effort home rail. The main process
-creates one short-lived session ID, selects the `top-playing-now` sort (falling
-back to that opaque ID when the sort catalogue changes), and requires a
-universe ID while accepting chart entries that omit `rootPlaceId`. Missing root
-places are enriched in one anonymous Games API batch when possible; the
-partial entry remains available as a details-only tile if enrichment fails. A
-chart failure is shown in the rail and does not block search, details, or direct
-joins.
+The renderer treats discovery as a best-effort home rail. The main process:
+
+1. creates one short-lived session ID;
+2. follows `nextSortsPageToken` as `sortsPageToken` for a bounded number of
+   catalogue pages;
+3. recursively normalizes every observed row shape, including entries that
+   have a `universeId` and player count but no `rootPlaceId`, then enriches
+   missing roots through the anonymous Games API; and
+4. when the official response is a descriptor with no experience rows, uses a
+   bounded, read-only [Rolimons game catalog](https://api.rolimons.com/games/v1/gamelist)
+   as a compatibility fallback. The fallback is ranked by its reported live
+   player count, resolves each root place through Roblox's official
+   `universes/v1/places/{placeId}/universe` endpoint, and hydrates the resulting
+   universes with the official Games API before sending them to the renderer.
+
+The fallback never receives cookies or secrets and is not treated as an
+authoritative Roblox chart contract. Its response is marked
+`source: "rolimons-fallback"`; if both sources fail, the rail shows a useful
+error while search, details, and direct joins remain available.
 
 ### 5.2 Experience details
 
@@ -164,6 +182,17 @@ GET https://games.roblox.com/v1/games?universeIds={comma-separated universe IDs}
 ```
 
 Use this anonymous endpoint to hydrate a search result or saved item. Important fields include `id`, `rootPlaceId`, `name`, `description`, `creator`, `playing`, `visits`, `maxPlayers`, timestamps, price, private-server availability, favorites, genres, and content restrictions. Batch and deduplicate IDs rather than issuing one request per card. See the [official `games.roblox.com` reference](https://create.roblox.com/docs/cloud/reference/domains/games).
+
+Do not assume a `200` response contains usable metadata: Roblox can return a
+`[TITLE UNAVAILABLE]`/`[DESCRIPTION UNAVAILABLE]` record with zero IDs and
+`isContentRestricted: true` for an otherwise public experience. Normalize and
+discard that placeholder. When the isolated Roblox session is signed in, retry
+the same request through its cookie-backed session before using the recent or
+search card as a fallback. Recent cards retain their root place ID, so the
+search API is also used to recover public metadata when both Games API paths
+return the placeholder. Persist the normalized recent DTO (without cookies or
+codes) so a temporary API failure does not erase the metadata already seen by
+the user.
 
 Optional enrichment:
 
@@ -471,6 +500,7 @@ Allow outbound HTTPS only to the minimum required hosts:
 
 - `apis.roblox.com`;
 - `games.roblox.com`;
+- `api.rolimons.com` (read-only chart fallback only);
 - `thumbnails.roblox.com`;
 - returned Roblox CDN hosts explicitly matched as subdomains of `rbxcdn.com`;
 - exact OAuth/login hosts only while their corresponding feature is active.
@@ -504,7 +534,8 @@ Do not probe `roblox.com` repeatedly. Report failures separately: DNS resolution
 
 Persist locally:
 
-- local favorites and recent experience IDs;
+- local favorites and recent experience metadata (IDs, display fields, and
+  counts; never cookies or secrets);
 - search/display preferences;
 - remembered private-server entries only after explicit opt-in, encrypted where `safeStorage` is available;
 - anonymous cache entries with expiry;

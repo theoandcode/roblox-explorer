@@ -16,6 +16,7 @@ const {
 const ALLOWED_API_HOSTS = new Set([
   'apis.roblox.com',
   'games.roblox.com',
+  'api.rolimons.com',
   'thumbnails.roblox.com',
   'users.roblox.com',
   'auth.roblox.com'
@@ -200,22 +201,38 @@ function discoveryCandidates(value, output = [], depth = 0) {
 
 function normalizeDiscoveryExperience(value) {
   if (!value || typeof value !== 'object') return undefined;
-  const explicitUniverseId = value.universeId ?? value.universeID ?? value.experienceId ?? value.experienceID ?? value.gameId ?? value.gameID;
-  const universeId = explicitUniverseId ?? (value.id !== undefined && (value.name || value.playerCount !== undefined || value.playing !== undefined || value.placeId !== undefined) ? value.id : undefined);
-  const rootPlaceId = value.rootPlaceId ?? value.rootPlaceID ?? value.placeId ?? value.placeID ?? value.rootPlace?.id;
+  const metadata = value.contentMetadata && typeof value.contentMetadata === 'object' ? value.contentMetadata : undefined;
+  const source = metadata ? { ...value, ...metadata } : value;
+  const explicitUniverseId = source.universeId ?? source.universeID ?? source.experienceId ?? source.experienceID ?? source.gameId ?? source.gameID ?? source.contentId ?? source.contentID;
+  const universeId = explicitUniverseId ?? (source.id !== undefined && (source.name || source.displayName || source.title || source.playerCount !== undefined || source.playing !== undefined || source.placeId !== undefined) ? source.id : undefined);
+  const rootPlaceId = source.rootPlaceId ?? source.rootPlaceID ?? source.placeId ?? source.placeID ?? source.rootPlace?.id;
   if (universeId === undefined) return undefined;
-  const hasExperienceFields = rootPlaceId !== undefined || ['name', 'description', 'playerCount', 'playing', 'currentPlayers', 'visits', 'visitCount'].some((field) => value[field] !== undefined);
+  const playerCount = source.playerCount ?? source.playing ?? source.playerCounts?.playing ?? source.currentPlayers ?? source.stats?.playerCount ?? source.stats?.playing;
+  const visits = source.visits ?? source.visitCount;
+  const hasExperienceFields = rootPlaceId !== undefined || ['name', 'displayName', 'title', 'description', 'playerCount', 'playing', 'currentPlayers', 'visits', 'visitCount', 'primaryMediaAsset'].some((field) => source[field] !== undefined) || playerCount !== undefined || visits !== undefined;
   if (!hasExperienceFields) return undefined;
   try {
     return normalizeExperience({
-      ...value,
+      ...source,
       universeId,
       ...(rootPlaceId === undefined ? {} : { rootPlaceId }),
-      playerCount: value.playerCount ?? value.playing ?? value.playerCounts?.playing ?? value.currentPlayers,
-      visits: value.visits ?? value.visitCount,
-      iconUrl: value.iconUrl ?? value.iconImageUrl,
-      thumbnailUrls: value.thumbnailUrls || value.thumbnails
+      name: source.name ?? source.displayName ?? source.title,
+      description: source.description ?? source.gameDescription,
+      playerCount: Number.isFinite(playerCount) ? playerCount : (typeof playerCount === 'string' && playerCount.trim() ? Number(playerCount) : undefined),
+      visits: Number.isFinite(visits) ? visits : (typeof visits === 'string' && visits.trim() ? Number(visits) : undefined),
+      iconUrl: source.iconUrl ?? source.iconImageUrl,
+      thumbnailUrls: source.thumbnailUrls || source.thumbnails
     }, { allowMissingRootPlaceId: true });
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeRobloxCdnUrl(value) {
+  if (typeof value !== 'string' || !value) return undefined;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' && parsed.hostname.endsWith('.rbxcdn.com') ? parsed.toString() : undefined;
   } catch {
     return undefined;
   }
@@ -231,35 +248,86 @@ function flattenDiscoveryResults(payload) {
 }
 
 class ExperienceDiscoveryProvider {
-  constructor(client, experiences) {
+  constructor(client, experiences, options = {}) {
     this.client = client;
     this.experiences = experiences;
+    // Keep the external compatibility source opt-in for library consumers;
+    // the app enables it in createApiClients below after the official source
+    // has been attempted.
+    this.chartFallbackEnabled = options.chartFallbackEnabled === true;
   }
 
   async topCharts() {
     const sessionId = randomUUID();
-    const query = new URLSearchParams({ device: 'computer', country: 'all', sessionId });
     let sortId = 'top-playing-now';
+    let officialError;
+    let results = [];
     try {
-      const sorts = await this.client.request('https://apis.roblox.com', `/explore-api/v1/get-sorts?${query}`, { cacheTtlMs: 120000 });
-      const sort = discoveryCandidates(sorts).find((item) => {
-        const id = item?.sortId ?? item?.id ?? item?.sortID;
-        return typeof id === 'string' && /top-playing-now|top[_-]?charts?|popular/i.test(id);
-      });
+      const sorts = await this.getSorts(sessionId);
+      const sortIds = ['top-playing-now', 'top-trending', 'up-and-coming', 'top-revisited', 'fun-with-friends', 'top-earning'];
+      const candidates = discoveryCandidates(sorts);
+      const sort = sortIds.map((wanted) => candidates.find((item) => String(item?.sortId ?? item?.sortID ?? item?.id ?? '') === wanted)).find(Boolean)
+        || candidates.find((item) => /top-playing-now|top[_-]?charts?|popular/i.test(String(item?.sortId ?? item?.sortID ?? item?.id ?? '')));
       sortId = String(sort?.sortId ?? sort?.sortID ?? sort?.id ?? sortId);
-    } catch {
-      // The catalogue has drifted in the past; the stable public sort ID is a
-      // useful fallback and the content request gives the renderer data when
-      // Roblox keeps the content route available.
+      const content = await this.getSortContent(sessionId, sortId);
+      results = flattenDiscoveryResults(content);
+    } catch (error) {
+      officialError = error;
     }
-    const contentQuery = new URLSearchParams({ device: 'computer', country: 'all', sessionId, sortId });
-    const content = await this.client.request('https://apis.roblox.com', `/explore-api/v1/get-sort-content?${contentQuery}`, { cacheTtlMs: 120000 });
-    let results = flattenDiscoveryResults(content);
+    if (!results.length && this.chartFallbackEnabled) {
+      try {
+        const fallback = await this.fallbackCharts();
+        if (fallback.results.length) return fallback;
+      } catch (fallbackError) {
+        if (!officialError) officialError = fallbackError;
+      }
+    }
+    if (officialError && !results.length) {
+      throw new RobloxApiError('Top charts are unavailable because Roblox returned no experience rows', { code: 'CHART_UNAVAILABLE', host: officialError.host, status: officialError.status });
+    }
+    if (!results.length) return { sortId, results };
+    results = await this.hydrateChartResults(results);
+    return { sortId, results };
+  }
+
+  async getSorts(sessionId) {
+    let sorts = [];
+    let sortsPageToken;
+    for (let page = 0; page < 5; page += 1) {
+      const query = new URLSearchParams({ device: 'computer', country: 'all', sessionId });
+      if (sortsPageToken) query.set('sortsPageToken', sortsPageToken);
+      const payload = await this.client.request('https://apis.roblox.com', `/explore-api/v1/get-sorts?${query}`, { cacheTtlMs: 120000 });
+      sorts.push(payload);
+      const next = typeof payload?.nextSortsPageToken === 'string' && payload.nextSortsPageToken ? payload.nextSortsPageToken : undefined;
+      if (!next || next === sortsPageToken) break;
+      sortsPageToken = next;
+    }
+    return sorts;
+  }
+
+  async getSortContent(sessionId, sortId) {
+    let content = [];
+    let pageToken;
+    for (let page = 0; page < 3; page += 1) {
+      const query = new URLSearchParams({ device: 'computer', country: 'all', sessionId, sortId });
+      if (pageToken) query.set('pageToken', pageToken);
+      const payload = await this.client.request('https://apis.roblox.com', `/explore-api/v1/get-sort-content?${query}`, { cacheTtlMs: 120000 });
+      content.push(payload);
+      const pageResults = flattenDiscoveryResults(payload);
+      if (pageResults.length) break;
+      const next = typeof payload?.nextPageToken === 'string' && payload.nextPageToken ? payload.nextPageToken : undefined;
+      if (!next || next === pageToken) break;
+      pageToken = next;
+    }
+    return content;
+  }
+
+  async hydrateChartResults(results, { hydrateAll = false } = {}) {
     // Chart entries often contain a universe ID and live player count but no
     // root place ID. Resolve those IDs in one anonymous Games API batch when
     // possible; the partial chart DTO is still returned if that enrichment is
     // unavailable so the renderer can show the chart and link to details.
-    const unresolvedIds = results.filter((item) => !item.rootPlaceId).map((item) => item.universeId).slice(0, 50);
+    const unresolvedIds = results.filter((item) => hydrateAll || !item.rootPlaceId).map((item) => item.universeId).slice(0, 50);
     if (this.experiences && unresolvedIds.length) {
       try {
         const details = await this.experiences.getMany(unresolvedIds);
@@ -285,41 +353,155 @@ class ExperienceDiscoveryProvider {
         // blocked or has a temporary schema/network failure.
       }
     }
-    return { sortId, results };
+    return results;
+  }
+
+  async fallbackCharts() {
+    const payload = await this.client.request('https://api.rolimons.com', '/games/v1/gamelist', { cacheTtlMs: 300000, timeoutMs: 10000, retry: false });
+    if (!payload?.success || !payload.games || typeof payload.games !== 'object' || Array.isArray(payload.games)) {
+      throw new RobloxApiError('The fallback chart catalog returned an unsupported response', { code: 'CHART_UNAVAILABLE', host: 'api.rolimons.com' });
+    }
+    const candidates = Object.entries(payload.games).flatMap(([placeId, value]) => {
+      if (!Array.isArray(value)) return [];
+      const rootPlaceId = normalizeId(placeId);
+      const name = typeof value[0] === 'string' ? value[0].trim() : '';
+      const playerCount = Number(value[1]);
+      if (!rootPlaceId || !name || !Number.isFinite(playerCount) || playerCount < 0) return [];
+      const thumbnailUrl = normalizeRobloxCdnUrl(value[2]);
+      return [{ rootPlaceId, name, playerCount, ...(thumbnailUrl ? { thumbnailUrls: [thumbnailUrl] } : {}) }];
+    }).sort((a, b) => b.playerCount - a.playerCount).slice(0, 12);
+    if (!candidates.length) throw new RobloxApiError('The fallback chart catalog contains no usable games', { code: 'CHART_UNAVAILABLE', host: 'api.rolimons.com' });
+
+    const resolved = await Promise.all(candidates.map(async (candidate) => {
+      try {
+        const mapping = await this.client.request('https://apis.roblox.com', `/universes/v1/places/${candidate.rootPlaceId}/universe`, { cacheTtlMs: 300000, timeoutMs: 10000, retry: false });
+        const universeId = normalizeId(mapping?.universeId ?? mapping?.id);
+        if (!universeId) return undefined;
+        return normalizeDiscoveryExperience({ ...candidate, universeId });
+      } catch {
+        return undefined;
+      }
+    }));
+    const results = resolved.filter(Boolean);
+    if (!results.length) throw new RobloxApiError('The fallback chart catalog could not resolve any Roblox universes', { code: 'CHART_UNAVAILABLE', host: 'apis.roblox.com' });
+    return { sortId: 'top-playing-now', source: 'rolimons-fallback', results: await this.hydrateChartResults(results, { hydrateAll: true }) };
   }
 }
 
+function isUnavailableExperience(experience) {
+  if (!experience || typeof experience !== 'object') return true;
+  if (experience.isContentRestricted === true) return true;
+  return /^\[(?:TITLE|DESCRIPTION) UNAVAILABLE\]$/i.test(String(experience.name || '').trim());
+}
+
+function normalizeFallbackExperience(fallback, universeId) {
+  try { return normalizeExperience({ ...fallback, universeId: String(universeId) }); } catch { return undefined; }
+}
+
+function mergeUnavailableExperience(experience, fallback, universeId) {
+  const normalizedFallback = normalizeFallbackExperience(fallback, universeId);
+  if (!normalizedFallback) return experience;
+  if (!experience) return normalizedFallback;
+  if (!isUnavailableExperience(experience)) return experience;
+  const hasUsableCreator = experience.creator?.name && !/^\[(?:UNKNOWN)\]$/i.test(experience.creator.name);
+  const hasUsableName = experience.name && !/^\[(?:TITLE) UNAVAILABLE\]$/i.test(experience.name) && experience.name !== 'Untitled experience';
+  const hasUsableDescription = experience.description && !/^\[(?:DESCRIPTION) UNAVAILABLE\]$/i.test(experience.description);
+  return {
+    ...normalizedFallback,
+    ...experience,
+    universeId: String(universeId),
+    rootPlaceId: experience.rootPlaceId || normalizedFallback.rootPlaceId,
+    name: hasUsableName ? experience.name : normalizedFallback.name,
+    description: hasUsableDescription ? experience.description : normalizedFallback.description,
+    creator: hasUsableCreator ? experience.creator : normalizedFallback.creator,
+    playerCount: experience.playerCount > 0 ? experience.playerCount : normalizedFallback.playerCount,
+    visits: experience.visits > 0 ? experience.visits : normalizedFallback.visits,
+    maxPlayers: experience.maxPlayers > 0 ? experience.maxPlayers : normalizedFallback.maxPlayers,
+    contentMaturity: experience.contentMaturity || normalizedFallback.contentMaturity,
+    ageRecommendationDisplayName: experience.ageRecommendationDisplayName || normalizedFallback.ageRecommendationDisplayName,
+    canonicalUrlPath: experience.canonicalUrlPath || normalizedFallback.canonicalUrlPath,
+    iconUrl: experience.iconUrl || normalizedFallback.iconUrl,
+    thumbnailUrls: experience.thumbnailUrls?.length ? experience.thumbnailUrls : normalizedFallback.thumbnailUrls
+  };
+}
+
 class ExperienceRepository {
-  constructor(client) { this.client = client; }
-  async getMany(universeIds) {
+  constructor(client, authenticatedClient, searchProvider) {
+    this.client = client;
+    this.authenticatedClient = authenticatedClient && authenticatedClient !== client ? authenticatedClient : undefined;
+    this.searchProvider = searchProvider;
+  }
+
+  async _getMany(client, universeIds, { cache = true } = {}) {
     if (!Array.isArray(universeIds) || universeIds.length < 1 || universeIds.length > 50) throw new ValidationError('up to 50 universe IDs are required');
     const ids = [...new Set(universeIds.map((id) => requireId(String(id), 'universeId')))];
-    const payload = await this.client.request('https://games.roblox.com', `/v1/games?universeIds=${encodeURIComponent(ids.join(','))}`, { cacheTtlMs: 300000 });
+    const options = cache ? { cacheTtlMs: 300000 } : {};
+    const payload = await client.request('https://games.roblox.com', `/v1/games?universeIds=${encodeURIComponent(ids.join(','))}`, options);
     const data = Array.isArray(payload?.data) ? payload.data : [];
     return data.flatMap((item) => { try { return [normalizeExperience(item)]; } catch { return []; } });
   }
 
-  async getOne(universeId, fallback) {
-    let experience;
-    try { [experience] = await this.getMany([universeId]); } catch (error) {
-      if (!fallback) throw error;
-    }
-    let resolved = experience;
-    if (!resolved && fallback) {
-      try { resolved = normalizeExperience({ ...fallback, universeId: String(universeId) }); } catch { resolved = undefined; }
-    }
-    if (!resolved) throw new RobloxApiError('Experience details are unavailable', { code: 'NOT_FOUND', status: 404 });
-    const thumbnails = await this.getThumbnails(resolved.universeId).catch(() => ({ iconUrl: undefined, thumbnailUrls: [] }));
-    return { ...resolved, ...thumbnails };
+  async getMany(universeIds, options) {
+    return this._getMany(this.client, universeIds, options);
   }
 
-  async getThumbnails(universeId) {
+  async hasAuthenticatedSession() {
+    const cookies = this.authenticatedClient?.session?.cookies;
+    if (!cookies || typeof cookies.get !== 'function') return true;
+    try {
+      const values = await cookies.get({ url: 'https://www.roblox.com', name: '.ROBLOSECURITY' });
+      return Array.isArray(values) && values.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async getOne(universeId, fallback, { cache = true } = {}) {
+    let experience;
+    let lastError;
+    try { [experience] = await this.getMany([universeId], { cache }); } catch (error) {
+      lastError = error;
+    }
+    // Roblox may return a valid HTTP response containing only the restricted
+    // placeholder for anonymous requests. If an isolated signed-in session
+    // is available, retry through it before falling back to local card data.
+    if ((!experience || isUnavailableExperience(experience)) && this.authenticatedClient && await this.hasAuthenticatedSession()) {
+      try { [experience] = await this._getMany(this.authenticatedClient, [universeId], { cache }); }
+      catch (error) { lastError ||= error; }
+    }
+    // A recent entry retains its root place ID. Roblox's search API can still
+    // resolve that place to current public metadata when both Games API paths
+    // return the restricted placeholder, so use it as a read-only fallback.
+    if ((!experience || isUnavailableExperience(experience)) && this.searchProvider && fallback?.rootPlaceId) {
+      try {
+        const page = await this.searchProvider.search({ query: String(fallback.rootPlaceId) });
+        const placeId = String(fallback.rootPlaceId);
+        const match = (Array.isArray(page?.results) ? page.results : []).find((item) => String(item.rootPlaceId || '') === placeId || String(item.universeId || '') === String(universeId));
+        if (match) experience = match;
+      } catch (error) { lastError ||= error; }
+    }
+    let resolved = experience;
+    if (fallback) resolved = mergeUnavailableExperience(resolved, fallback, universeId) || normalizeFallbackExperience(fallback, universeId);
+    if (!resolved) {
+      if (lastError) throw lastError;
+      throw new RobloxApiError('Experience details are unavailable', { code: 'NOT_FOUND', status: 404 });
+    }
+    const thumbnails = await this.getThumbnails(resolved.universeId, { cache }).catch(() => ({ iconUrl: undefined, thumbnailUrls: [] }));
+    return {
+      ...resolved,
+      ...(thumbnails.iconUrl ? { iconUrl: thumbnails.iconUrl } : {}),
+      ...(thumbnails.thumbnailUrls?.length ? { thumbnailUrls: thumbnails.thumbnailUrls } : {})
+    };
+  }
+
+  async getThumbnails(universeId, { cache = true } = {}) {
     const id = requireId(String(universeId), 'universeId');
-    const iconPayload = await this.client.request('https://thumbnails.roblox.com', `/v1/games/icons?universeIds=${id}&returnPolicy=PlaceHolder&size=150x150&format=Png&isCircular=false`, { cacheTtlMs: 300000 });
+    const options = cache ? { cacheTtlMs: 300000 } : {};
+    const iconPayload = await this.client.request('https://thumbnails.roblox.com', `/v1/games/icons?universeIds=${id}&returnPolicy=PlaceHolder&size=150x150&format=Png&isCircular=false`, options);
     const icon = Array.isArray(iconPayload?.data) ? iconPayload.data.find((item) => normalizeId(item?.targetId) === id) : undefined;
     let iconUrl;
     if (icon) { try { iconUrl = normalizeThumbnail(icon).imageUrl; } catch { iconUrl = undefined; } }
-    const mediaPayload = await this.client.request('https://thumbnails.roblox.com', `/v1/games/${id}/thumbnails?countPerUniverse=10&defaults=true&size=768x432&format=Png&isCircular=false`, { cacheTtlMs: 300000 }).catch(() => undefined);
+    const mediaPayload = await this.client.request('https://thumbnails.roblox.com', `/v1/games/${id}/thumbnails?countPerUniverse=10&defaults=true&size=768x432&format=Png&isCircular=false`, options).catch(() => undefined);
     const thumbnailUrls = Array.isArray(mediaPayload?.data) ? mediaPayload.data.flatMap((item) => {
       try { return [normalizeThumbnail(item).imageUrl]; } catch { return []; }
     }) : [];
@@ -514,12 +696,16 @@ function redactPrivatePage(page) {
 function createApiClients({ fetchImpl, authFetch, authSession } = {}) {
   const anonymous = new RobloxApiClient({ fetchImpl });
   const authenticated = new RobloxApiClient({ fetchImpl: authFetch || fetchImpl, session: authSession });
-  const experiences = new ExperienceRepository(anonymous);
+  const search = new ExperienceSearchProvider(anonymous);
+  // Anonymous Games API calls can return a restricted placeholder even for
+  // public experiences. Keep the isolated authenticated session as a second
+  // source so signed-in users still get the full metadata contract.
+  const experiences = new ExperienceRepository(anonymous, authenticated, search);
   return {
     anonymous,
     authenticated,
-    search: new ExperienceSearchProvider(anonymous),
-    discovery: new ExperienceDiscoveryProvider(anonymous, experiences),
+    search,
+    discovery: new ExperienceDiscoveryProvider(anonymous, experiences, { chartFallbackEnabled: true }),
     experiences,
     servers: new ServerRepository(anonymous, authenticated)
   };

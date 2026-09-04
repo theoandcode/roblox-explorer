@@ -65,6 +65,25 @@ test('normalizes discovery chart content and preserves the selected sort', async
   assert.match(requests[1], /sortId=top-playing-now/);
 });
 
+test('uses the Explore sort continuation token when the first page only contains filters', async () => {
+  const sortRequests = [];
+  const fetchImpl = async (url) => {
+    const request = String(url);
+    if (request.includes('/get-sorts?')) {
+      sortRequests.push(request);
+      return sortRequests.length === 1
+        ? response(200, { sorts: [{ sortId: 'filters_v5', contentType: 'Filters' }], nextSortsPageToken: 'sort-page-2' })
+        : response(200, { sorts: [{ sortId: 'top-playing-now', contentType: 'Games' }] });
+    }
+    return response(200, { content: [{ universeId: 77, rootPlaceId: 88, name: 'Chart game', playing: 123 }] });
+  };
+  const provider = new ExperienceDiscoveryProvider(new RobloxApiClient({ fetchImpl, cache: new TtlCache() }));
+  const page = await provider.topCharts();
+  assert.equal(page.sortId, 'top-playing-now');
+  assert.equal(sortRequests.length, 2);
+  assert.match(sortRequests[1], /sortsPageToken=sort-page-2/);
+});
+
 test('enriches chart entries that omit rootPlaceId', async () => {
   const requests = [];
   const fetchImpl = async (url) => {
@@ -83,6 +102,38 @@ test('enriches chart entries that omit rootPlaceId', async () => {
   assert.equal(page.results[0].rootPlaceId, '88');
   assert.equal(page.results[0].playerCount, 123);
   assert.equal(requests.length, 3);
+});
+
+test('uses a bounded catalog fallback when Explore returns chart metadata without rows', async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    const request = String(url);
+    requests.push(request);
+    if (request.includes('/get-sorts?')) return response(200, { sorts: [{ sortId: 'top-playing-now' }] });
+    if (request.includes('/get-sort-content?')) return response(200, { contentType: 'Games', sortId: 'top-playing-now', nextPageToken: undefined });
+    if (request.includes('api.rolimons.com/games/v1/gamelist')) return response(200, {
+      success: true,
+      games: {
+        100: ['First fallback game', 900],
+        200: ['Second fallback game', 400]
+      }
+    });
+    if (request.includes('/universes/v1/places/100/universe')) return response(200, { universeId: 1000 });
+    if (request.includes('/universes/v1/places/200/universe')) return response(200, { universeId: 2000 });
+    if (request.includes('games.roblox.com/v1/games?universeIds=1000%2C2000')) return response(200, {
+      data: [
+        { id: 1000, rootPlaceId: 100, name: 'First fallback game', description: 'First', playing: 900 },
+        { id: 2000, rootPlaceId: 200, name: 'Second fallback game', description: 'Second', playing: 400 }
+      ]
+    });
+    throw new Error(`unexpected URL: ${request}`);
+  };
+  const client = new RobloxApiClient({ fetchImpl, cache: new TtlCache() });
+  const provider = new ExperienceDiscoveryProvider(client, new ExperienceRepository(client), { chartFallbackEnabled: true });
+  const page = await provider.topCharts();
+  assert.equal(page.source, 'rolimons-fallback');
+  assert.deepEqual(page.results.map((item) => [item.universeId, item.rootPlaceId, item.playerCount]), [['1000', '100', 900], ['2000', '200', 400]]);
+  assert.match(requests.find((request) => request.includes('api.rolimons.com')), /gamelist/);
 });
 
 test('flattens nested discovery payloads without leaking malformed entries', () => {
@@ -140,6 +191,47 @@ test('falls back to search metadata when details returns a restricted placeholde
   assert.equal(result.universeId, '123');
   assert.equal(result.rootPlaceId, '456');
   assert.equal(result.name, 'Search result');
+});
+
+test('uses the signed-in Games API when anonymous details are restricted', async () => {
+  const anonymousFetch = async (url) => {
+    const request = String(url);
+    if (request.includes('games.roblox.com/v1/games?')) return response(200, { data: [{ id: 0, rootPlaceId: 0, name: '[TITLE UNAVAILABLE]', isContentRestricted: true }] });
+    if (request.includes('thumbnails.roblox.com')) return response(200, { data: [] });
+    throw new Error(`unexpected anonymous URL: ${request}`);
+  };
+  const authenticatedFetch = async (url) => {
+    const request = String(url);
+    if (request.includes('games.roblox.com/v1/games?')) return response(200, { data: [{ id: 123, rootPlaceId: 456, name: 'Full details', description: 'A playable experience', playing: 42, visits: 9000, maxPlayers: 12 }] });
+    throw new Error(`unexpected authenticated URL: ${request}`);
+  };
+  const authSession = { cookies: { get: async () => [{ name: '.ROBLOSECURITY' }] } };
+  const repository = new ExperienceRepository(
+    new RobloxApiClient({ fetchImpl: anonymousFetch }),
+    new RobloxApiClient({ fetchImpl: authenticatedFetch, session: authSession })
+  );
+  const result = await repository.getOne('123', undefined, { cache: false });
+  assert.equal(result.name, 'Full details');
+  assert.equal(result.playerCount, 42);
+  assert.equal(result.visits, 9000);
+  assert.equal(result.maxPlayers, 12);
+});
+
+test('hydrates a recent item from search when both Games responses are restricted', async () => {
+  const fetchImpl = async (url) => {
+    const request = String(url);
+    if (request.includes('games.roblox.com/v1/games?')) return response(200, { data: [{ id: 0, rootPlaceId: 0, name: '[TITLE UNAVAILABLE]', isContentRestricted: true }] });
+    if (request.includes('thumbnails.roblox.com')) return response(200, { data: [] });
+    throw new Error(`unexpected URL: ${request}`);
+  };
+  const searchProvider = {
+    search: async ({ query }) => ({ results: [{ universeId: '123', rootPlaceId: query, name: 'Recovered experience', description: 'Recovered metadata', playerCount: 17 }] })
+  };
+  const repository = new ExperienceRepository(new RobloxApiClient({ fetchImpl }), undefined, searchProvider);
+  const result = await repository.getOne('123', { universeId: '123', rootPlaceId: '456', name: 'Recent card' }, { cache: false });
+  assert.equal(result.name, 'Recovered experience');
+  assert.equal(result.rootPlaceId, '456');
+  assert.equal(result.playerCount, 17);
 });
 
 test('stores private join codes encrypted when safeStorage is available', () => {

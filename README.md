@@ -6,11 +6,16 @@ Roblox Explorer is a **vibe-coded**, cross-platform Electron client for explorin
 
 - Browse recently played and favorited experiences from Home.
 - Search experiences by name and open a details page with thumbnails, player counts, and public servers.
-- Browse top charts when the discovery API is available.
+- Browse top charts from Roblox's Explore API, with a bounded read-only catalog fallback when Roblox returns chart metadata without game rows.
 - Join a public server or an accessible private server through the installed Roblox Player.
 - Use the `roblox:` protocol for the final handoff; Roblox Player applies the account's admission and permission rules.
 
-Public browsing, experience details, thumbnails, public servers, and code-based joins work without signing in. The Roblox Player must already be installed and registered for the `roblox:` protocol.
+Public browsing, thumbnails, public servers, and code-based joins work without signing in. Experience details first use the anonymous Games API and, when Roblox returns its restricted placeholder response, retry through the isolated signed-in session or resolve a recent card through public search before falling back to saved metadata. The Roblox Player must already be installed and registered for the `roblox:` protocol.
+
+When Roblox's Explore chart endpoint returns only a descriptor, the home rail
+uses the read-only Rolimons catalog as a compatibility fallback, then resolves
+the entries through Roblox's public universe and Games APIs. No Roblox cookies
+or credentials are sent to that catalog.
 
 ## Private servers
 

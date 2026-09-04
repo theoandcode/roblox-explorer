@@ -240,6 +240,17 @@ function experienceTile(game) {
   return tile;
 }
 
+function hasExperienceDetails(game) {
+  if (!game?.universeId || !game?.rootPlaceId) return false;
+  if (!game.name || game.name === 'Untitled experience' || /^\[(?:TITLE|DESCRIPTION) UNAVAILABLE\]$/i.test(game.name)) return false;
+  const creatorName = game.creator?.name;
+  return Boolean((game.description && !/^\[DESCRIPTION UNAVAILABLE\]$/i.test(game.description))
+    || (creatorName && creatorName !== 'Unknown creator' && !/^\[UNKNOWN\]$/i.test(creatorName))
+    || game.maxPlayers > 0
+    || game.playerCount > 0
+    || game.visits > 0);
+}
+
 function renderTileGrid(node, games, emptyText) {
   if (!node) return;
   const validGames = (games || []).filter((game) => game?.universeId);
@@ -259,14 +270,18 @@ function renderTileGrid(node, games, emptyText) {
 
 async function hydrateExperiences(ids, fallbackById = new Map()) {
   const unique = [...new Set((ids || []).map(String).filter((id) => /^[1-9][0-9]{0,19}$/.test(id)))];
-  const missing = unique.filter((id) => !state.experienceCache.has(id));
+  const missing = unique.filter((id) => !hasExperienceDetails(state.experienceCache.get(id)));
   await Promise.all(missing.map(async (id) => {
     try {
       const game = await api.getExperience({ universeId: id, fallback: fallbackById.get(id), recordRecent: false });
-      if (game?.universeId) state.experienceCache.set(String(game.universeId), game);
+      if (game?.universeId) {
+        const previous = state.experienceCache.get(String(game.universeId));
+        if (!previous || hasExperienceDetails(game) || !hasExperienceDetails(previous)) state.experienceCache.set(String(game.universeId), game);
+      }
     } catch {
       const fallback = fallbackById.get(id);
-      if (fallback?.universeId && fallback?.rootPlaceId) state.experienceCache.set(id, fallback);
+      const previous = state.experienceCache.get(id);
+      if (!hasExperienceDetails(previous) && fallback?.universeId && fallback?.rootPlaceId) state.experienceCache.set(id, previous || fallback);
     }
   }));
   return unique.map((id) => state.experienceCache.get(id)).filter(Boolean);
@@ -324,7 +339,8 @@ function renderResults(page, append = false) {
     hydrateGridImages(grid);
   }
   $('results-title').textContent = state.query ? `Results for “${state.query}”` : 'Experiences';
-  $('load-more-button').classList.toggle('hidden', !page?.nextPageToken);
+  const hasMore = Boolean(page?.nextPageToken);
+  $('search-pagination').classList.toggle('hidden', !hasMore);
 }
 
 async function search(query, append = false) {
@@ -406,7 +422,10 @@ async function loadExperienceRoute(universeId) {
   closePermissionsEditor();
   try {
     const fallback = state.searchResults.get(String(universeId)) || state.experienceCache.get(String(universeId));
-    const details = await api.getExperience({ universeId, fallback });
+    // Home cards can come from a compact persisted snapshot. Always refresh
+    // the details route so that snapshot fields never mask live metadata or
+    // player counts cached by an earlier Home render.
+    const details = await api.getExperience({ universeId, fallback, cache: false });
     if (requestId !== state.routeRequest) return;
     state.details = details;
     state.selected = details;

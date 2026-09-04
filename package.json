@@ -11,7 +11,7 @@
     "start": "dotenv -e .env -e .env.example -- electron .",
     "postinstall": "node scripts/ensure-electron-install.js",
     "test": "node --test",
-    "check": "node --check scripts/ensure-electron-install.js && node --check scripts/build.js && node --check src/main/main.js && node --check src/main/roblox-client.js && node --check src/main/launch-uri.js && node --check src/main/private-link.js && node --check src/main/persistence.js && node --check src/main/validation.js && node --check src/preload/preload.js && node --check src/renderer/renderer.js",
+    "check": "node --check scripts/ensure-electron-install.js && node --check scripts/build.js && node --check src/main/auth-proxy.js && node --check src/main/main.js && node --check src/main/roblox-client.js && node --check src/main/launch-uri.js && node --check src/main/private-link.js && node --check src/main/persistence.js && node --check src/main/validation.js && node --check src/preload/preload.js && node --check src/renderer/renderer.js",
     "build": "node scripts/build.js --current",
     "build:current": "node scripts/build.js --current",
     "build:mac": "node scripts/build.js --mac",

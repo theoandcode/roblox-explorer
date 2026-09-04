@@ -3,6 +3,14 @@ const assert = require('node:assert/strict');
 
 const { buildLaunchUri, classifyJoinIntent } = require('../src/main/launch-uri');
 const { parsePrivateServerLink } = require('../src/main/private-link');
+const { normalizeAuthProxy } = require('../src/main/auth-proxy');
+
+test('normalizes root trailing slashes in login proxy URLs', () => {
+  assert.equal(normalizeAuthProxy('http://127.0.0.1:8080/'), 'http://127.0.0.1:8080');
+  assert.equal(normalizeAuthProxy('  socks4://79.137.196.250:1080///  '), 'socks4://79.137.196.250:1080');
+  assert.equal(normalizeAuthProxy('https://proxy.example:8443'), 'https://proxy.example:8443');
+  assert.throws(() => normalizeAuthProxy('http://proxy.example:8080/path/'), /without credentials or a path/);
+});
 
 test('builds modern launch URIs for matchmaking and exact public servers', () => {
   assert.equal(buildLaunchUri({ placeId: '1818' }), 'roblox://experiences/start?placeId=1818');

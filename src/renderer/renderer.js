@@ -42,6 +42,36 @@ const formatDate = (value) => {
   return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleDateString();
 };
 
+const IPC_ERROR_PREFIX = /^Error invoking remote method ['"][^'"]+['"]:\s*/i;
+
+function cleanErrorText(value) {
+  if (typeof value !== 'string') return '';
+  const text = value.replace(IPC_ERROR_PREFIX, '').trim();
+  return text && !/^\[object Object\]$/i.test(text) ? text : '';
+}
+
+function readableError(error, fallback = 'The operation could not be completed.', depth = 0) {
+  if (depth > 3) return fallback;
+  if (typeof error === 'string') return cleanErrorText(error) || fallback;
+  if (!error || typeof error !== 'object') return fallback;
+  const candidates = [
+    error.safeMessage,
+    error.message,
+    error.error?.safeMessage,
+    error.error?.message,
+    error.details?.message
+  ];
+  for (const candidate of candidates) {
+    const text = cleanErrorText(candidate);
+    if (text) return text;
+    if (candidate && typeof candidate === 'object') {
+      const nested = readableError(candidate, '', depth + 1);
+      if (nested) return nested;
+    }
+  }
+  return fallback;
+}
+
 function showToast(message, kind = 'info', durationMs = 4200) {
   if (!message) return;
   const region = $('toast-region');
@@ -78,9 +108,12 @@ function showToast(message, kind = 'info', durationMs = 4200) {
 
 function setMessage(message, kind = 'warn') {
   const node = $('global-message');
-  node.textContent = message || '';
-  node.className = `message ${message ? kind : 'hidden'}`;
-  if (message) showToast(message, kind);
+  const displayMessage = message === undefined || message === null || message === ''
+    ? ''
+    : readableError(message);
+  node.textContent = displayMessage;
+  node.className = `message ${displayMessage ? kind : 'hidden'}`;
+  if (displayMessage) showToast(displayMessage, kind);
 }
 
 function showSection(id, visible) {
@@ -315,7 +348,7 @@ async function loadHome({ force = false } = {}) {
       state.charts = Array.isArray(chartPage?.results) ? chartPage.results : [];
     } catch (error) {
       state.charts = [];
-      state.chartsError = error?.message || 'Could not load top charts.';
+      state.chartsError = readableError(error, 'Could not load top charts.');
     }
     state.chartsLoaded = true;
     renderHomeRails();
@@ -363,7 +396,7 @@ async function search(query, append = false) {
   } catch (error) {
     if (requestId !== state.searchRequestId) return;
     renderResults({ results: [], nextPageToken: undefined });
-    setMessage(error.message || 'Search failed.');
+    setMessage(readableError(error, 'Search failed.'));
   }
 }
 
@@ -438,7 +471,7 @@ async function loadExperienceRoute(universeId) {
     else updatePrivateSummary();
   } catch (error) {
     if (requestId !== state.routeRequest) return;
-    setMessage(error.message || 'Could not load that experience.');
+    setMessage(readableError(error, 'Could not load that experience.'));
     navigate('/home');
   }
 }
@@ -467,8 +500,9 @@ async function listPublicServers(cursor) {
     $('load-more-servers-button').classList.toggle('hidden', !page.nextPageCursor);
   } catch (error) {
     if (state.selected?.universeId !== selectedUniverseId) return;
-    list.innerHTML = `<p class="muted">${escapeHtml(error.message || 'Could not load servers.')}</p>`;
-    setMessage(error.message || 'Could not load servers.');
+    const message = readableError(error, 'Could not load servers.');
+    list.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
+    setMessage(message);
   }
 }
 
@@ -478,7 +512,7 @@ async function launch(intent) {
     const result = await api.join({ ...intent, format: selectedLaunchFormat() });
     setMessage('Sent to Roblox Player. It will apply your account permissions and join rules.', 'ok');
     if (result?.kind === 'private-link' || result?.kind === 'private-access') setTimeout(() => setMessage('If Player did not open, check that Roblox is installed and registered for the roblox: protocol.'), 3500);
-  } catch (error) { setMessage(error.message || 'Could not hand off to Roblox Player.'); }
+  } catch (error) { setMessage(readableError(error, 'Could not hand off to Roblox Player.')); }
 }
 
 function renderSavedJoins() {
@@ -489,7 +523,7 @@ function renderSavedJoins() {
 
 async function refreshSavedJoins() {
   try { state.savedJoins = await api.listSavedPrivateJoins(); renderSavedJoins(); }
-  catch (error) { setMessage(error.message || 'Could not load saved links.'); }
+  catch (error) { setMessage(readableError(error, 'Could not load saved links.')); }
 }
 
 function renderAuth() {
@@ -573,7 +607,7 @@ async function openPermissionsEditor(target) {
     applyPermissionsEditorState(merged);
     state.permissionsSettingsLoaded = true;
   } catch (error) {
-    if (state.permissionsServerId === serverId) setMessage(error.message || 'Could not load current private-server settings.');
+    if (state.permissionsServerId === serverId) setMessage(readableError(error, 'Could not load current private-server settings.'));
   } finally {
     if (state.permissionsServerId === serverId) {
       controls.forEach((control) => { control.disabled = false; });
@@ -620,7 +654,7 @@ async function saveAuthProxy(value) {
     state.authProxy = await api.setAuthProxy({ proxy: value });
     renderAuthProxyConfig();
     setMessage(value ? 'Login proxy saved for the next Roblox sign-in.' : 'Login proxy cleared; using the system proxy.', 'ok');
-  } catch (error) { setMessage(error.message || 'Could not save the login proxy.'); }
+  } catch (error) { setMessage(readableError(error, 'Could not save the login proxy.')); }
 }
 
 function privateJoinButton(server) {
@@ -682,10 +716,10 @@ async function listPrivateServers() {
   catch (error) {
     if (state.selected?.universeId === selectedUniverseId) {
       state.privateAccessible = [];
-      $('my-private-list').innerHTML = `<p class="muted">${escapeHtml(error.message || 'Could not list private servers.')}</p>`;
+      $('my-private-list').innerHTML = `<p class="muted">${escapeHtml(readableError(error, 'Could not list private servers.'))}</p>`;
       updatePrivateSummary();
     }
-    setMessage(error.message || 'Could not list private servers.');
+    setMessage(readableError(error, 'Could not list private servers.'));
   }
 }
 
@@ -705,7 +739,7 @@ async function listOwnedPrivateServers() {
     state.privateOwned = [];
     $('owned-private-list').innerHTML = '<p class="muted">Your owned private servers are unavailable right now.</p>';
     updatePrivateSummary();
-    setMessage(error.message || 'Could not load your private servers.');
+    setMessage(readableError(error, 'Could not load your private servers.'));
   }
 }
 
@@ -721,13 +755,13 @@ async function runDiagnostics() {
   $('diagnostics').innerHTML = '<p class="muted">Running read-only checks…</p>';
   try {
     const report = await api.runConnectivityCheck();
-    $('diagnostics').innerHTML = report.checks.map((check) => `<div class="diagnostic-row"><strong>${escapeHtml(check.name)}</strong><span class="${check.status === 'ok' ? 'ok' : 'error'}">${check.status === 'ok' ? `OK · ${check.latencyMs} ms` : escapeHtml(check.error?.message || 'Unavailable')}</span></div>`).join('') + `<div class="diagnostic-row"><strong>Roblox web session</strong><span>${report.auth.authenticated ? 'Authenticated' : 'Not signed in'}</span></div>`;
+    $('diagnostics').innerHTML = report.checks.map((check) => `<div class="diagnostic-row"><strong>${escapeHtml(check.name)}</strong><span class="${check.status === 'ok' ? 'ok' : 'error'}">${check.status === 'ok' ? `OK · ${check.latencyMs} ms` : escapeHtml(readableError(check.error, 'Unavailable'))}</span></div>`).join('') + `<div class="diagnostic-row"><strong>Roblox web session</strong><span>${report.auth.authenticated ? 'Authenticated' : 'Not signed in'}</span></div>`;
     state.auth = report.auth;
     renderAuth();
     const allOk = report.checks.every((check) => check.status === 'ok');
     $('connection-pill').textContent = allOk ? 'APIs reachable' : 'Some APIs unavailable';
     $('connection-pill').className = `status-pill ${allOk ? 'ok' : 'warn'}`;
-  } catch (error) { setMessage(error.message || 'Diagnostics failed.'); }
+  } catch (error) { setMessage(readableError(error, 'Diagnostics failed.')); }
 }
 
 async function renderRoute() {
@@ -775,7 +809,7 @@ document.addEventListener('click', async (event) => {
       if (state.details) renderExperience();
       renderHomeRails();
       setMessage(response.favorited ? 'Added to favorites.' : 'Removed from favorites.', 'ok');
-    } catch (error) { setMessage(error.message || 'Could not update favorites.'); }
+    } catch (error) { setMessage(readableError(error, 'Could not update favorites.')); }
   } else if (action === 'open-private') {
     if (!state.auth.authenticated) { setMessage('Sign in to manage your private servers.'); return; }
     openDialog('owner-private-dialog');
@@ -785,22 +819,22 @@ document.addEventListener('click', async (event) => {
   }
   else if (action === 'saved-join') {
     try { await api.useSavedPrivateJoin({ id: target.dataset.id, format: selectedLaunchFormat() }); setMessage('Sent to Roblox Player.', 'ok'); }
-    catch (error) { setMessage(error.message); }
+    catch (error) { setMessage(readableError(error)); }
   } else if (action === 'saved-delete') {
     try { await api.deleteSavedPrivateJoin({ id: target.dataset.id }); await refreshSavedJoins(); setMessage('Saved private server removed.', 'ok'); }
-    catch (error) { setMessage(error.message); }
+    catch (error) { setMessage(readableError(error)); }
   } else if (action === 'private-entry-join') {
     try {
       await api.joinPrivateServer({ vipServerId: target.dataset.id, format: selectedLaunchFormat(), ...(target.dataset.placeId ? { placeId: target.dataset.placeId } : {}) });
       setMessage('Sent to Roblox Player. It will apply your account permissions and join rules.', 'ok');
-    } catch (error) { setMessage(error.message || 'Could not hand off to Roblox Player.'); }
+    } catch (error) { setMessage(readableError(error, 'Could not hand off to Roblox Player.')); }
   } else if (action === 'permissions-private') openPermissionsEditor(target);
   else if (action === 'subscription-private') {
     const active = target.dataset.active !== 'true';
     const warning = active ? 'Renew this private-server subscription? Roblox may charge Robux.' : 'Cancel this private-server subscription?';
     if (!window.confirm(warning)) return;
     try { await api.updatePrivateServer({ vipServerId: target.dataset.id, operation: 'subscription', payload: { active, ...(active ? { confirmPurchase: true } : {}) } }); await listOwnedPrivateServers(); setMessage(active ? 'Private-server subscription renewed.' : 'Private-server subscription cancelled.', 'ok'); }
-    catch (error) { setMessage(error.message || 'Could not update subscription.'); }
+    catch (error) { setMessage(readableError(error, 'Could not update subscription.')); }
   }
 });
 
@@ -842,17 +876,17 @@ $('run-diagnostics-button').addEventListener('click', runDiagnostics);
 $('clear-browsing-button').addEventListener('click', async () => {
   if (!window.confirm('Clear recent experience history and in-memory API cache? Favorites and saved private servers will stay.')) return;
   try { await api.clearBrowsingData(); state.recents = []; state.experienceCache.clear(); state.homeLoadPromise = undefined; renderHomeRails(); setMessage('Browsing history and API cache cleared.', 'ok'); }
-  catch (error) { setMessage(error.message || 'Could not clear browsing data.'); }
+  catch (error) { setMessage(readableError(error, 'Could not clear browsing data.')); }
 });
 $('forget-private-button').addEventListener('click', async () => {
   if (!window.confirm('Forget every saved private-server code from this app?')) return;
   try { state.savedJoins = await api.forgetSavedPrivateJoins(); renderSavedJoins(); setMessage('Saved private-server codes forgotten.', 'ok'); }
-  catch (error) { setMessage(error.message || 'Could not forget saved private servers.'); }
+  catch (error) { setMessage(readableError(error, 'Could not forget saved private servers.')); }
 });
 $('clear-session-button').addEventListener('click', async () => {
   if (!window.confirm('Sign out and clear the Roblox web session for this app?')) return;
   try { state.auth = await api.signOut(); renderAuth(); setMessage('Roblox session cleared.', 'ok'); }
-  catch (error) { setMessage(error.message); }
+  catch (error) { setMessage(readableError(error)); }
 });
 $('auth-button').addEventListener('click', async () => {
   try {
@@ -860,7 +894,7 @@ $('auth-button').addEventListener('click', async () => {
     else { await api.beginSignIn(); setMessage('Complete sign-in in the Roblox window, then return here.', 'ok'); }
     await refreshAuth();
     await refreshAuthProxyConfig();
-  } catch (error) { setMessage(error.message || 'Could not open sign-in.'); }
+  } catch (error) { setMessage(readableError(error, 'Could not open sign-in.')); }
 });
 $('create-private-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -880,7 +914,7 @@ $('create-private-form').addEventListener('submit', async (event) => {
   const createButton = $('create-private-button');
   createButton.disabled = true;
   try { await api.createPrivateServer({ universeId: state.selected.universeId, body, confirmPurchase: true }); $('create-private-form').reset(); setMessage('Private server created. Refreshing your owned servers…', 'ok'); await listOwnedPrivateServers(); }
-  catch (error) { setMessage(error.message || 'Could not create the private server.'); }
+  catch (error) { setMessage(readableError(error, 'Could not create the private server.')); }
   finally { renderOwnedPrivateSectionState(); }
 });
 $('permissions-private-form').addEventListener('submit', async (event) => {
@@ -898,7 +932,7 @@ $('permissions-private-form').addEventListener('submit', async (event) => {
     closePermissionsEditor();
     await listOwnedPrivateServers();
     setMessage('Private-server access updated.', 'ok');
-  } catch (error) { setMessage(error.message || 'Could not update private-server access.'); }
+  } catch (error) { setMessage(readableError(error, 'Could not update private-server access.')); }
 });
 $('cancel-permissions-private-button').addEventListener('click', closePermissionsEditor);
 $('private-link-form').addEventListener('submit', async (event) => {
@@ -915,7 +949,7 @@ $('private-link-form').addEventListener('submit', async (event) => {
     $('private-preview').innerHTML = `<strong>${escapeHtml(parsed.kind)}</strong> parsed${parsed.placeId ? ` for place ${escapeHtml(parsed.placeId)}` : ''}. ${parsed.placeId ? 'Ready to join.' : 'Add a place ID to continue.'}`;
     $('private-preview').classList.remove('hidden');
     $('join-private-button').classList.toggle('hidden', !parsed.placeId);
-  } catch (error) { setMessage(error.message || 'Could not parse that private link.'); }
+  } catch (error) { setMessage(readableError(error, 'Could not parse that private link.')); }
 });
 $('join-private-button').addEventListener('click', async () => {
   if (!state.parsedPrivate?.placeId) return;
@@ -924,7 +958,7 @@ $('join-private-button').addEventListener('click', async () => {
   await launch(intent);
   if ($('remember-private-checkbox').checked) {
     try { await api.savePrivateJoin({ label: $('private-label-input').value.trim() || 'Saved private server', placeId: parsed.placeId, kind: parsed.kind, code: parsed.code }); await refreshSavedJoins(); setMessage('Private-server code saved.', 'ok'); }
-    catch (error) { setMessage(error.message || 'Could not save private code.'); }
+    catch (error) { setMessage(readableError(error, 'Could not save private code.')); }
   }
 });
 

@@ -1,6 +1,7 @@
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
+const { AUTH_PROXY_ENV, normalizeAuthProxy } = require('./auth-proxy');
 const {
   app,
   BrowserWindow,
@@ -41,7 +42,6 @@ const PRIVATE_SERVER_MANAGEMENT_ENABLED = process.env.ROBLOX_NAVIGATOR_PRIVATE_S
 // Creation and renewal can spend Robux. They remain opt-in until a current
 // authenticated contract test has verified the exact request and price flow.
 const PRIVATE_SERVER_PURCHASES_ENABLED = process.env.ROBLOX_NAVIGATOR_PRIVATE_PURCHASES === '1';
-const AUTH_PROXY_ENV = 'ROBLOX_NAVIGATOR_AUTH_PROXY';
 const AUTH_ORIGINS = new Set([
   'www.roblox.com',
   'auth.roblox.com',
@@ -68,9 +68,22 @@ let authProxyCookieListener;
 
 function safeError(error) {
   if (error instanceof ValidationError || error instanceof RobloxApiError) {
-    return { code: error.code || 'ERROR', message: error.safeMessage || error.message, status: error.status, host: error.host, retryAfterMs: error.retryAfterMs };
+    const message = typeof error.safeMessage === 'string' && error.safeMessage
+      ? error.safeMessage
+      : typeof error.message === 'string' && error.message
+        ? error.message
+        : 'The operation could not be completed';
+    return { code: error.code || 'ERROR', message, status: error.status, host: error.host, retryAfterMs: error.retryAfterMs };
   }
   return { code: 'INTERNAL_ERROR', message: 'The operation could not be completed' };
+}
+
+function ipcError(error) {
+  const safe = safeError(error);
+  const wrapped = new Error(safe.message);
+  wrapped.name = safe.code || 'IPC_ERROR';
+  Object.assign(wrapped, safe);
+  return wrapped;
 }
 
 function trustedSender(event) {
@@ -85,11 +98,11 @@ function trustedSender(event) {
 
 function registerHandler(channel, handler) {
   ipcMain.handle(channel, async (event, input) => {
-    if (!trustedSender(event)) throw safeError(new ValidationError('untrusted IPC sender'));
+    if (!trustedSender(event)) throw ipcError(new ValidationError('untrusted IPC sender'));
     try {
       return await handler(input, event);
     } catch (error) {
-      throw safeError(error);
+      throw ipcError(error);
     }
   });
 }
@@ -113,19 +126,7 @@ function configuredAuthProxy() {
 }
 
 function authProxyRules(raw = configuredAuthProxy()) {
-  if (!raw) return undefined;
-  if (typeof raw !== 'string' || raw.length > 512 || /[\u0000-\u001f\u007f]/.test(raw)) {
-    throw new ValidationError(`${AUTH_PROXY_ENV} is invalid`);
-  }
-  let parsed;
-  try { parsed = new URL(raw); } catch { throw new ValidationError(`${AUTH_PROXY_ENV} must be a proxy URL`); }
-  // WHATWG URL leaves the path empty for bare SOCKS endpoints (for example
-  // socks4://127.0.0.1:1080), while HTTP URLs are normalized to "/".
-  const rootPath = parsed.pathname === '' || parsed.pathname === '/';
-  if (!['http:', 'https:', 'socks4:', 'socks5:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || !rootPath || parsed.search || parsed.hash) {
-    throw new ValidationError(`${AUTH_PROXY_ENV} must be an HTTP(S) or SOCKS proxy URL without credentials or a path`);
-  }
-  return raw;
+  return normalizeAuthProxy(raw);
 }
 
 async function configureAuthSessionProxy(targetSession) {
@@ -205,14 +206,15 @@ function authProxyConfig() {
   const effective = saved !== undefined ? saved : environment;
   let valid = true;
   let error;
+  let normalized;
   if (effective) {
-    try { authProxyRules(effective); }
+    try { normalized = authProxyRules(effective); }
     catch (validationError) { valid = false; error = safeError(validationError).message; }
   }
   return {
     // Never echo an invalid persisted value (which could contain credentials)
     // back across IPC. The user can clear it and enter a validated URL.
-    authProxy: valid && saved ? saved : '',
+    authProxy: valid && saved ? normalized || '' : '',
     source: saved !== undefined ? 'saved' : environment ? 'environment' : 'system',
     configured: Boolean(effective),
     active: authProxyApplied,
@@ -402,8 +404,7 @@ function validateLaunchFormat(value) {
 function validateAuthProxyInput(input) {
   assertPlainObject(input, 'auth proxy input');
   const raw = input.proxy === undefined ? '' : boundedString(input.proxy, 'proxy', 512).trim();
-  if (raw) authProxyRules(raw);
-  return raw || undefined;
+  return raw ? authProxyRules(raw) : undefined;
 }
 
 function requirePrivateServerManagement() {

@@ -4,34 +4,34 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; script-src-attr 'none'; connect-src 'none'; img-src 'self' https://*.rbxcdn.com data:; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'" />
-    <title>Roblox Navigator</title>
+    <title>Roblox Explorer</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="icon" type="image/jpeg" href="/avatar.jpeg" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div class="brand-mark" aria-label="Roblox Navigator home">RN</div>
-        <div class="brand-copy">
-          <h1>Roblox Navigator</h1>
-          <span>Find a place. Pick a server. Play.</span>
-        </div>
+        <button id="home-button" class="brand-home" type="button" aria-label="Go to home">
+          <img class="brand-mark" src="/avatar.jpeg" alt="" aria-hidden="true" />
+          <span class="brand-name">Roblox Explorer</span>
+        </button>
+        <nav class="top-nav" aria-label="Primary navigation">
+          <button id="nav-home-button" class="nav-button active" type="button">Home</button>
+        </nav>
         <div class="top-actions">
           <span id="connection-pill" class="status-pill neutral">Checking APIs…</span>
-          <button id="auth-button" class="button secondary">Sign in</button>
-          <button id="settings-button" class="icon-button" aria-label="Open settings">⚙</button>
+          <button id="join-link-button" class="button ghost" type="button">Join link</button>
+          <button id="settings-button" class="icon-button" type="button" aria-label="Open settings" title="Settings">⚙</button>
+          <button id="auth-button" class="button secondary" type="button">Sign in</button>
         </div>
       </header>
 
       <main>
         <section class="hero-panel">
-          <div>
-            <p class="eyebrow">API-first launcher</p>
-            <h2>Browse Roblox without opening the website.</h2>
-            <p class="hero-copy">Search experiences, inspect live servers, and hand your choice to the installed Roblox Player.</p>
-          </div>
           <form id="search-form" class="search-bar" role="search">
             <label class="sr-only" for="search-input">Search experiences</label>
-            <input id="search-input" name="query" autocomplete="off" placeholder="Search experiences…" maxlength="200" />
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <input id="search-input" name="query" autocomplete="off" placeholder="Search experiences" maxlength="200" />
             <button class="button primary" type="submit">Search</button>
           </form>
         </section>
@@ -39,174 +39,106 @@
         <div id="global-message" class="message hidden" role="status"></div>
         <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-        <section id="results-section" class="content-section">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Discover</p>
-              <h2 id="results-title">Search for an experience</h2>
-            </div>
-            <button id="load-more-button" class="button ghost hidden">Load more</button>
+        <section id="home-page" class="page-view">
+          <div class="page-heading compact-heading">
+            <div><p class="eyebrow">Home</p><h1>Find your next experience</h1></div>
           </div>
-          <div id="results-grid" class="card-grid empty-state">
-            <div class="empty-icon">⌕</div>
-            <p>Try a search such as “obby”, “roleplay”, or “racing”.</p>
-          </div>
+          <section id="recent-section" class="rail-section">
+            <div class="section-heading"><h2>Recently played</h2></div>
+            <div id="recent-grid" class="tile-grid empty-state"><p class="muted">Nothing here yet.</p></div>
+          </section>
+          <section id="favorites-section" class="rail-section">
+            <div class="section-heading"><h2>Favorites</h2></div>
+            <div id="favorites-grid" class="tile-grid empty-state"><p class="muted">Favorite an experience to keep it close.</p></div>
+          </section>
+          <section id="charts-section" class="rail-section">
+            <div class="section-heading"><h2>Top charts</h2><button id="refresh-charts-button" class="button ghost" type="button">Refresh</button></div>
+            <div id="charts-grid" class="tile-grid empty-state"><p class="muted">Loading charts…</p></div>
+          </section>
         </section>
 
-        <section id="experience-section" class="content-section hidden">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Selected experience</p>
-              <h2 id="experience-title">Experience</h2>
-            </div>
-            <button id="back-results-button" class="button ghost">Back to results</button>
-          </div>
+        <section id="search-page" class="page-view hidden">
+          <div class="page-heading"><div><p class="eyebrow">Search</p><h1 id="results-title">Experiences</h1></div><button id="load-more-button" class="button ghost hidden" type="button">Load more</button></div>
+          <div id="results-grid" class="tile-grid empty-state"><p class="muted">Search for an experience.</p></div>
+        </section>
+
+        <section id="details-page" class="page-view hidden">
+          <div class="page-heading"><div><p class="eyebrow">Experience</p><h1 id="experience-title">Experience</h1></div><button id="details-home-button" class="button ghost" type="button">Home</button></div>
           <div id="experience-detail" class="experience-layout"></div>
+          <section id="private-section" class="detail-subsection">
+            <div class="section-heading private-section-heading">
+              <div><p class="eyebrow">Private servers</p><h2 id="private-summary-title">Servers you can join</h2><p id="private-summary-copy" class="muted">Sign in to load servers for this experience.</p></div>
+              <div class="heading-actions"><button id="list-place-private-button" class="button ghost" type="button">Refresh</button><button id="open-private-button" class="button primary" type="button">Your private servers</button></div>
+            </div>
+            <div id="my-private-list" class="private-server-list flat-private-list"><p class="muted">Sign in to list private servers.</p></div>
+          </section>
+          <section id="servers-section" class="detail-subsection">
+            <div class="section-heading"><div><p class="eyebrow">Live instances</p><h2>Public servers</h2></div><button id="refresh-servers-button" class="button ghost" type="button">Refresh</button></div>
+            <div class="server-toolbar"><span id="server-summary" class="muted">Choose a server to launch.</span><label class="toggle"><input id="exclude-full-checkbox" type="checkbox" checked /><span>Hide full</span></label></div>
+            <div id="servers-list" class="server-list"></div><button id="load-more-servers-button" class="button ghost hidden" type="button">More servers</button>
+          </section>
         </section>
+      </main>
 
-        <section id="servers-section" class="content-section hidden">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Live instances</p>
-              <h2>Public servers</h2>
-            </div>
-            <button id="refresh-servers-button" class="button ghost">Refresh</button>
-          </div>
-          <div class="server-toolbar">
-            <span id="server-summary" class="muted">Choose a server to launch.</span>
-            <label class="toggle"><input id="exclude-full-checkbox" type="checkbox" checked /><span>Hide full</span></label>
-          </div>
-          <div id="servers-list" class="server-list"></div>
-          <button id="load-more-servers-button" class="button ghost hidden">More servers</button>
-        </section>
+      <footer><span>Roblox Explorer</span><span>Roblox Player handles final admission.</span></footer>
+    </div>
 
-        <section id="private-section" class="content-section">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Private access</p>
-              <h2>Join with a private-server link</h2>
-            </div>
-          </div>
-          <div class="private-grid">
-            <form id="private-link-form" class="panel-card">
-              <label for="private-link-input">Roblox private-server link or code</label>
-              <textarea id="private-link-input" rows="3" placeholder="Paste a roblox.com/share link, deep link, or code"></textarea>
-              <div class="form-row inline">
-                <label for="private-code-kind">Raw code type</label>
-                <select id="private-code-kind">
-                  <option value="linkCode">Share link code</option>
-                  <option value="accessCode">Reserved/access code</option>
-                </select>
-              </div>
-              <div class="form-row">
-                <label for="private-place-input">Place ID <span class="muted">(needed when the link has no place)</span></label>
-                <input id="private-place-input" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 1818" />
-              </div>
-              <div class="form-row inline">
-                <label class="checkbox-label"><input id="remember-private-checkbox" type="checkbox" /> Remember this code</label>
-                <input id="private-label-input" class="optional-label" maxlength="100" placeholder="Label (optional)" />
-              </div>
-              <div class="form-actions">
-                <button class="button primary" type="submit">Parse link</button>
-                <button id="join-private-button" class="button secondary hidden" type="button">Join private server</button>
-              </div>
-              <div id="private-preview" class="preview-box hidden"></div>
-            </form>
-            <div class="panel-card saved-card">
-              <div class="card-heading-row"><h3>Saved private servers</h3><button id="refresh-saved-button" class="text-button">Refresh</button></div>
-              <div id="saved-private-list" class="saved-list"><p class="muted">No saved codes yet.</p></div>
-            </div>
-          </div>
-        </section>
-
-        <section id="my-private-section" class="content-section hidden">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Private servers</p>
-              <h2>Servers you can join</h2>
-            </div>
-            <div class="heading-actions">
-              <button id="list-place-private-button" class="button ghost">For selected place</button>
-            </div>
-          </div>
-          <p class="muted private-list-note">These rows are join-only. Roblox decides whether your account can enter each server.</p>
-          <div id="my-private-list" class="private-server-list"><p class="muted">Sign in to list private servers.</p></div>
-        </section>
-
-        <section id="owned-private-section" class="content-section hidden">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Owner tools</p>
-              <h2>Your private server</h2>
-              <p id="owned-private-experience-note" class="muted">Create and manage the private servers you own for this experience.</p>
-            </div>
-            <button id="refresh-owned-private-button" class="button ghost">Refresh</button>
-          </div>
+    <dialog id="owner-private-dialog" class="popout wide-popout" aria-labelledby="owner-private-dialog-title">
+      <div class="dialog-shell">
+        <div class="dialog-heading"><div><p class="eyebrow">Owner tools</p><h2 id="owner-private-dialog-title">Your private server</h2></div><button class="icon-button dialog-close" type="button" data-close-dialog="owner-private-dialog" aria-label="Close private-server tools">×</button></div>
+        <section id="owned-private-section" class="dialog-section">
+          <div class="section-heading"><div><p class="eyebrow">Owner tools</p><h3>Your private server</h3><p id="owned-private-experience-note" class="muted">Create and manage the private servers you own for this experience.</p></div><button id="refresh-owned-private-button" class="button ghost" type="button">Refresh</button></div>
           <div class="private-grid owner-private-grid">
             <form id="create-private-form" class="panel-card">
-              <h3>Create a private server</h3>
-              <p class="muted">The server is created for the selected experience. Roblox may charge Robux; review the price before confirming.</p>
-              <div class="form-row">
-                <label for="create-private-name">Server name <span class="muted">(optional)</span></label>
-                <input id="create-private-name" maxlength="100" placeholder="My private server" />
-              </div>
-              <div class="form-row">
-                <label for="create-private-price">Expected price in Robux <span class="muted">(optional)</span></label>
-                <input id="create-private-price" type="number" min="0" step="1" inputmode="numeric" placeholder="Shown by Roblox" />
-              </div>
+              <h3>Create a private server</h3><p class="muted">Roblox may charge Robux; review the price before confirming.</p>
+              <div class="form-row"><label for="create-private-name">Server name <span class="muted">(optional)</span></label><input id="create-private-name" maxlength="100" placeholder="My private server" /></div>
+              <div class="form-row"><label for="create-private-price">Expected price in Robux <span class="muted">(optional)</span></label><input id="create-private-price" type="number" min="0" step="1" inputmode="numeric" placeholder="Shown by Roblox" /></div>
               <label class="checkbox-label"><input id="create-private-confirm" type="checkbox" /> I understand this may charge Robux</label>
-              <div class="form-actions"><button id="create-private-button" class="button primary" type="submit">Create server</button></div>
-              <p id="create-private-help" class="muted">Creation is disabled until the current Roblox purchase contract is enabled.</p>
+              <div class="form-actions"><button id="create-private-button" class="button primary" type="submit">Create server</button></div><p id="create-private-help" class="muted">Creation is disabled until the current Roblox purchase contract is enabled.</p>
             </form>
-            <div class="panel-card">
-              <div class="card-heading-row"><h3>Servers you own for this experience</h3></div>
-              <div id="owned-private-list" class="private-server-list"><p class="muted">Sign in to load your servers.</p></div>
-            </div>
+            <div class="panel-card"><div class="card-heading-row"><h3>Owned by you</h3></div><div id="owned-private-list" class="private-server-list"><p class="muted">Sign in to load your servers.</p></div></div>
           </div>
           <form id="permissions-private-form" class="panel-card permission-editor hidden">
             <div class="card-heading-row"><div><h3>Manage access</h3><p id="permissions-private-name" class="muted">Choose one of your servers above.</p></div><button id="cancel-permissions-private-button" class="text-button" type="button">Cancel</button></div>
             <label class="checkbox-label"><input id="permissions-private-friends" type="checkbox" /> Allow Roblox friends to join</label>
-            <div class="form-row">
-              <label for="permissions-private-add">User IDs to allow <span class="muted">(comma separated, optional)</span></label>
-              <input id="permissions-private-add" inputmode="numeric" placeholder="123, 456" />
-            </div>
-            <div class="form-row">
-              <label for="permissions-private-remove">User IDs to remove <span class="muted">(comma separated, optional)</span></label>
-              <input id="permissions-private-remove" inputmode="numeric" placeholder="123, 456" />
-            </div>
-            <p class="muted">These controls apply only to the server you own. Roblox may reject changes if the server is inactive or your session has expired.</p>
-            <div class="form-actions"><button class="button primary" type="submit">Save access</button></div>
+            <div class="form-row"><label for="permissions-private-add">Allowed user IDs <span class="muted">(comma separated)</span></label><input id="permissions-private-add" inputmode="numeric" placeholder="123, 456" /></div>
+            <div class="form-row"><label for="permissions-private-remove">User IDs to remove <span class="muted">(comma separated, optional)</span></label><input id="permissions-private-remove" inputmode="numeric" placeholder="123, 456" /></div>
+            <p class="muted">These controls apply only to the server you own.</p><div class="form-actions"><button class="button primary" type="submit">Save access</button></div>
           </form>
         </section>
+      </div>
+    </dialog>
 
-        <section id="settings-section" class="content-section hidden">
-          <div class="section-heading"><div><p class="eyebrow">Troubleshooting</p><h2>Connectivity and session</h2></div></div>
-          <form id="auth-proxy-form" class="panel-card auth-proxy-card">
-            <div class="card-heading-row"><div><h3>Roblox login proxy</h3><p class="muted">Use a trusted local HTTP(S) or SOCKS proxy when the Roblox web login is blocked.</p></div><span id="auth-proxy-status" class="status-pill neutral">System proxy</span></div>
-            <label for="auth-proxy-input">Proxy URL</label>
-            <input id="auth-proxy-input" type="text" inputmode="url" autocomplete="off" spellcheck="false" maxlength="512" placeholder="http://127.0.0.1:8080" />
-            <p id="auth-proxy-help" class="muted">Leave empty to use the operating-system proxy. The configured proxy is used only while the isolated Roblox sign-in window is open, then the session switches back to direct networking.</p>
-            <div class="form-actions"><button class="button primary" type="submit">Save proxy</button><button id="clear-auth-proxy-button" class="button ghost" type="button">Use system proxy</button></div>
+    <dialog id="join-dialog" class="popout" aria-labelledby="join-dialog-title">
+      <div class="dialog-shell">
+        <div class="dialog-heading"><div><p class="eyebrow">Private access</p><h2 id="join-dialog-title">Join with a link</h2></div><button class="icon-button dialog-close" type="button" data-close-dialog="join-dialog" aria-label="Close join dialog">×</button></div>
+        <div class="private-grid join-grid">
+          <form id="private-link-form" class="panel-card">
+            <label for="private-link-input">Roblox private-server link or code</label><textarea id="private-link-input" rows="3" placeholder="Paste a roblox.com/share link, deep link, or code"></textarea>
+            <div class="form-row inline"><label for="private-code-kind">Raw code type</label><select id="private-code-kind"><option value="linkCode">Share link code</option><option value="accessCode">Reserved/access code</option></select></div>
+            <div class="form-row"><label for="private-place-input">Place ID <span class="muted">(needed when absent)</span></label><input id="private-place-input" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 1818" /></div>
+            <div class="form-row inline"><label class="checkbox-label"><input id="remember-private-checkbox" type="checkbox" /> Remember code</label><input id="private-label-input" class="optional-label" maxlength="100" placeholder="Label (optional)" /></div>
+            <div class="form-actions"><button class="button primary" type="submit">Parse link</button><button id="join-private-button" class="button secondary hidden" type="button">Join private server</button></div><div id="private-preview" class="preview-box hidden"></div>
           </form>
-          <div id="diagnostics" class="diagnostics-grid"></div>
-          <div class="settings-actions">
-            <button id="run-diagnostics-button" class="button secondary">Run checks</button>
-            <button id="clear-browsing-button" class="button ghost">Clear browsing data</button>
-            <button id="forget-private-button" class="button ghost">Forget saved private servers</button>
-            <button id="clear-session-button" class="button danger">Sign out and clear session</button>
-          </div>
-          <div class="launch-preference">
-            <label for="launch-format">Player handoff format</label>
-            <select id="launch-format">
-              <option value="modern">Modern experiences/start</option>
-              <option value="legacy">Legacy placeId fallback</option>
-            </select>
-            <span class="muted">Use the legacy option only if your installed Player does not accept the modern link.</span>
-          </div>
-        </section>
-      </main>
-      <footer><span>Roblox Navigator</span><span>Roblox Player handles final admission and permissions.</span></footer>
-    </div>
+          <div class="panel-card saved-card"><div class="card-heading-row"><h3>Saved</h3><button id="refresh-saved-button" class="text-button" type="button">Refresh</button></div><div id="saved-private-list" class="saved-list"><p class="muted">No saved codes yet.</p></div></div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="settings-dialog" class="popout" aria-labelledby="settings-dialog-title">
+      <div class="dialog-shell">
+        <div class="dialog-heading"><div><p class="eyebrow">Settings</p><h2 id="settings-dialog-title">Connectivity</h2></div><button class="icon-button dialog-close" type="button" data-close-dialog="settings-dialog" aria-label="Close settings">×</button></div>
+        <form id="auth-proxy-form" class="panel-card auth-proxy-card">
+          <div class="card-heading-row"><div><h3>Roblox login proxy</h3><p class="muted">Used only by the isolated sign-in window.</p></div><span id="auth-proxy-status" class="status-pill neutral">System proxy</span></div>
+          <label for="auth-proxy-input">Proxy URL</label><input id="auth-proxy-input" type="text" inputmode="url" autocomplete="off" spellcheck="false" maxlength="512" placeholder="http://127.0.0.1:8080" /><p id="auth-proxy-help" class="muted">Leave empty to use the operating-system proxy.</p>
+          <div class="form-actions"><button class="button primary" type="submit">Save proxy</button><button id="clear-auth-proxy-button" class="button ghost" type="button">Use system proxy</button></div>
+        </form>
+        <section class="settings-block"><div class="section-heading"><h3>Diagnostics</h3><button id="run-diagnostics-button" class="button secondary" type="button">Run checks</button></div><div id="diagnostics" class="diagnostics-grid"></div></section>
+        <div class="settings-actions"><button id="clear-browsing-button" class="button ghost" type="button">Clear browsing data</button><button id="forget-private-button" class="button ghost" type="button">Forget saved servers</button><button id="clear-session-button" class="button danger" type="button">Sign out and clear session</button></div>
+        <div class="launch-preference"><label for="launch-format">Player handoff format</label><select id="launch-format"><option value="modern">Modern experiences/start</option><option value="legacy">Legacy placeId fallback</option></select><span class="muted">Use legacy only if Player rejects the modern link.</span></div>
+      </div>
+    </dialog>
+
     <script src="/renderer.js"></script>
   </body>
 </html>

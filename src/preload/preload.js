@@ -14,6 +14,8 @@ function onAuthStateChanged(callback) {
 contextBridge.exposeInMainWorld('robloxNavigator', {
   searchExperiences: (input) => invoke('search-experiences', input),
   getExperience: (input) => invoke('get-experience', input),
+  getExperienceThumbnails: (input) => invoke('get-experience-thumbnails', input),
+  getTopCharts: () => invoke('get-top-charts'),
   listPublicServers: (input) => invoke('list-public-servers', input),
   join: (input) => invoke('join', input),
   parsePrivateLink: (input) => invoke('parse-private-link', input),

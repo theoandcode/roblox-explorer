@@ -1,8 +1,8 @@
-# Roblox Navigator: application and API integration specification
+# Roblox Explorer: application and API integration specification
 
 Status: approved  
 Last verified: 2026-09-03  
-Working title: **Roblox Navigator**
+Working title: **Roblox Explorer**
 
 ## 1. Purpose
 
@@ -66,6 +66,24 @@ Consequences:
 
 All of these capabilities belong to one implementation and acceptance phase. They may be built as parallel workstreams, but private-server management is not deferred to a later release.
 
+### 3.1.1 Renderer navigation and surfaces
+
+The local renderer uses hash routes so navigation never leaves the app protocol:
+
+| Route | Purpose |
+| --- | --- |
+| `#/home` | Recently played, favorites, and top charts rails. |
+| `#/search?q={text}` | Paginated experience search results. |
+| `#/experience/{universeId}` | Experience details, inline joinable private servers, and public servers. |
+
+The brand mark and Home control are always visible. Experience cards use a
+thumbnail tile with a gradient overlay, capped description, and Details/Play
+actions. Settings, code-based private joins, and owner private-server tools are
+native Electron `<dialog>` popouts; joinable rows stay inline on the details
+page and no Roblox web page is embedded in the app renderer. On an
+authenticated details route, accessible and owned private-server lists are
+fetched automatically; the owned list is presented in the owner-tools popout.
+
 ### 3.2 Feasibility gate inside the target release
 
 The authenticated workstream starts with a time-boxed feasibility checkpoint confirming that the user's network can reach the necessary official login pages and that Roblox permits this flow. This checkpoint is part of the same phase, not a separate release. If it fails, the project has a documented external blocker: there is no supported substitute for the cookie-authenticated private-server endpoints. The app must not ask the user to paste `.ROBLOSECURITY`, collect a Roblox password in app-owned HTML, automate MFA/CAPTCHA, or read another browser's/player's cookie database.
@@ -122,11 +140,22 @@ This endpoint was announced by Roblox as the replacement search route, but is ab
 Optional follow-up discovery/charts:
 
 ```http
-GET https://apis.roblox.com/explore-api/v1/get-sorts?sessionId={UUID}
-GET https://apis.roblox.com/explore-api/v1/get-sort-content?sessionId={UUID}&sortId={opaque}
+GET https://apis.roblox.com/explore-api/v1/get-sorts
+    ?device=computer&country=all&sessionId={UUID}
+GET https://apis.roblox.com/explore-api/v1/get-sort-content
+    ?device=computer&country=all&sessionId={UUID}&sortId={opaque}
 ```
 
 These routes carry the same undocumented/compatibility risk as search.
+
+The renderer treats discovery as a best-effort home rail. The main process
+creates one short-lived session ID, selects the `top-playing-now` sort (falling
+back to that opaque ID when the sort catalogue changes), and requires a
+universe ID while accepting chart entries that omit `rootPlaceId`. Missing root
+places are enriched in one anonymous Games API batch when possible; the
+partial entry remains available as a details-only tile if enrichment fails. A
+chart failure is shown in the rail and does not block search, details, or direct
+joins.
 
 ### 5.2 Experience details
 
@@ -166,6 +195,11 @@ GET https://thumbnails.roblox.com/v1/games/{universeId}/thumbnails
 ```
 
 Accept only returned HTTPS image URLs on `*.rbxcdn.com` (and any specifically documented Roblox CDN host added later). Handle `Pending`, `Blocked`, and placeholder states. Cache images through Chromium's HTTP cache; do not proxy image bytes through renderer IPC. See the [official thumbnail endpoint reference](https://create.roblox.com/docs/cloud/reference/features/thumbnails).
+
+Search and discovery cards are rendered immediately and request thumbnails lazily
+through a narrow `get-experience-thumbnails` IPC method. The renderer receives
+only validated CDN URLs and falls back to a neutral placeholder when a thumbnail
+is pending, blocked, or no longer available.
 
 ### 5.4 Public servers
 

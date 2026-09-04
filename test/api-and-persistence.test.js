@@ -8,6 +8,9 @@ const {
   RobloxApiClient,
   RobloxApiError,
   ExperienceSearchProvider,
+  ExperienceDiscoveryProvider,
+  ExperienceRepository,
+  flattenDiscoveryResults,
   ServerRepository,
   TtlCache,
   redactPrivatePage,
@@ -44,6 +47,47 @@ test('flattens search groups, deduplicates universes, and preserves pagination',
   assert.equal(page.nextPageToken, 'next-token');
   assert.match(requested, /searchQuery=obby/);
   assert.match(requested, /pageToken=old-token/);
+});
+
+test('normalizes discovery chart content and preserves the selected sort', async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    requests.push(String(url));
+    if (String(url).includes('/get-sorts?')) return response(200, { sorts: [{ sortId: 'top-playing-now' }, { sortId: 'recommended' }] });
+    return response(200, { content: [{ universeId: 77, rootPlaceId: 88, name: 'Chart game', playing: 123 }] });
+  };
+  const provider = new ExperienceDiscoveryProvider(new RobloxApiClient({ fetchImpl, cache: new TtlCache() }));
+  const page = await provider.topCharts();
+  assert.equal(page.sortId, 'top-playing-now');
+  assert.deepEqual(page.results.map((item) => item.universeId), ['77']);
+  assert.equal(page.results[0].playerCount, 123);
+  assert.equal(requests.length, 2);
+  assert.match(requests[1], /sortId=top-playing-now/);
+});
+
+test('enriches chart entries that omit rootPlaceId', async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    const request = String(url);
+    requests.push(request);
+    if (request.includes('/get-sorts?')) return response(200, { sorts: [{ sortId: 'top-playing-now' }] });
+    if (request.includes('/get-sort-content?')) return response(200, { content: [{ universeId: 77, name: 'Chart game', playerCount: 123 }] });
+    if (request.includes('games.roblox.com/v1/games?')) return response(200, { data: [{ id: 77, rootPlaceId: 88, name: 'Chart game', playing: 123 }] });
+    throw new Error(`unexpected URL: ${request}`);
+  };
+  const client = new RobloxApiClient({ fetchImpl, cache: new TtlCache() });
+  const provider = new ExperienceDiscoveryProvider(client, new ExperienceRepository(client));
+  const page = await provider.topCharts();
+  assert.equal(page.results.length, 1);
+  assert.equal(page.results[0].universeId, '77');
+  assert.equal(page.results[0].rootPlaceId, '88');
+  assert.equal(page.results[0].playerCount, 123);
+  assert.equal(requests.length, 3);
+});
+
+test('flattens nested discovery payloads without leaking malformed entries', () => {
+  const result = flattenDiscoveryResults({ gameSet: [{ game: { universeId: 1, rootPlaceId: 2, name: 'Nested' } }, { universeId: 3, rootPlaceId: 4, name: 'Direct' }, { universeId: 5 }] });
+  assert.deepEqual(result.map((item) => item.universeId), ['1', '3']);
 });
 
 test('retries one CSRF challenge for a mutation and then succeeds', async () => {

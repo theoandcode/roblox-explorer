@@ -179,6 +179,116 @@ class ExperienceSearchProvider {
   }
 }
 
+function discoveryCandidates(value, output = [], depth = 0) {
+  if (depth > 8 || value === null || value === undefined) return output;
+  if (Array.isArray(value)) {
+    for (const item of value) discoveryCandidates(item, output, depth + 1);
+    return output;
+  }
+  if (typeof value !== 'object') return output;
+
+  // Explore responses have changed nesting a few times (contents, games,
+  // gameSet, and experience). Preserve the parent fields while unwrapping a
+  // nested game object so the normal experience DTO remains the only shape
+  // consumed by the renderer.
+  const nested = value.game || value.experience || value.gameData || value.place;
+  if (nested && typeof nested === 'object') output.push({ ...value, ...nested });
+  else output.push(value);
+  for (const child of Object.values(value)) discoveryCandidates(child, output, depth + 1);
+  return output;
+}
+
+function normalizeDiscoveryExperience(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const explicitUniverseId = value.universeId ?? value.universeID ?? value.experienceId ?? value.experienceID ?? value.gameId ?? value.gameID;
+  const universeId = explicitUniverseId ?? (value.id !== undefined && (value.name || value.playerCount !== undefined || value.playing !== undefined || value.placeId !== undefined) ? value.id : undefined);
+  const rootPlaceId = value.rootPlaceId ?? value.rootPlaceID ?? value.placeId ?? value.placeID ?? value.rootPlace?.id;
+  if (universeId === undefined) return undefined;
+  const hasExperienceFields = rootPlaceId !== undefined || ['name', 'description', 'playerCount', 'playing', 'currentPlayers', 'visits', 'visitCount'].some((field) => value[field] !== undefined);
+  if (!hasExperienceFields) return undefined;
+  try {
+    return normalizeExperience({
+      ...value,
+      universeId,
+      ...(rootPlaceId === undefined ? {} : { rootPlaceId }),
+      playerCount: value.playerCount ?? value.playing ?? value.playerCounts?.playing ?? value.currentPlayers,
+      visits: value.visits ?? value.visitCount,
+      iconUrl: value.iconUrl ?? value.iconImageUrl,
+      thumbnailUrls: value.thumbnailUrls || value.thumbnails
+    }, { allowMissingRootPlaceId: true });
+  } catch {
+    return undefined;
+  }
+}
+
+function flattenDiscoveryResults(payload) {
+  const results = [];
+  for (const candidate of discoveryCandidates(payload)) {
+    const normalized = normalizeDiscoveryExperience(candidate);
+    if (normalized) results.push(normalized);
+  }
+  return [...new Map(results.map((item) => [item.universeId, item])).values()];
+}
+
+class ExperienceDiscoveryProvider {
+  constructor(client, experiences) {
+    this.client = client;
+    this.experiences = experiences;
+  }
+
+  async topCharts() {
+    const sessionId = randomUUID();
+    const query = new URLSearchParams({ device: 'computer', country: 'all', sessionId });
+    let sortId = 'top-playing-now';
+    try {
+      const sorts = await this.client.request('https://apis.roblox.com', `/explore-api/v1/get-sorts?${query}`, { cacheTtlMs: 120000 });
+      const sort = discoveryCandidates(sorts).find((item) => {
+        const id = item?.sortId ?? item?.id ?? item?.sortID;
+        return typeof id === 'string' && /top-playing-now|top[_-]?charts?|popular/i.test(id);
+      });
+      sortId = String(sort?.sortId ?? sort?.sortID ?? sort?.id ?? sortId);
+    } catch {
+      // The catalogue has drifted in the past; the stable public sort ID is a
+      // useful fallback and the content request gives the renderer data when
+      // Roblox keeps the content route available.
+    }
+    const contentQuery = new URLSearchParams({ device: 'computer', country: 'all', sessionId, sortId });
+    const content = await this.client.request('https://apis.roblox.com', `/explore-api/v1/get-sort-content?${contentQuery}`, { cacheTtlMs: 120000 });
+    let results = flattenDiscoveryResults(content);
+    // Chart entries often contain a universe ID and live player count but no
+    // root place ID. Resolve those IDs in one anonymous Games API batch when
+    // possible; the partial chart DTO is still returned if that enrichment is
+    // unavailable so the renderer can show the chart and link to details.
+    const unresolvedIds = results.filter((item) => !item.rootPlaceId).map((item) => item.universeId).slice(0, 50);
+    if (this.experiences && unresolvedIds.length) {
+      try {
+        const details = await this.experiences.getMany(unresolvedIds);
+        const byUniverseId = new Map(details.map((item) => [item.universeId, item]));
+        results = results.map((item) => {
+          const detail = byUniverseId.get(item.universeId);
+          if (!detail) return item;
+          return {
+            ...detail,
+            ...item,
+            rootPlaceId: item.rootPlaceId || detail.rootPlaceId,
+            name: item.name === 'Untitled experience' ? detail.name : item.name,
+            description: item.description || detail.description,
+            creator: item.creator?.name && item.creator.name !== 'Unknown creator' ? item.creator : detail.creator,
+            maxPlayers: item.maxPlayers || detail.maxPlayers,
+            visits: item.visits || detail.visits,
+            iconUrl: item.iconUrl || detail.iconUrl,
+            thumbnailUrls: item.thumbnailUrls?.length ? item.thumbnailUrls : detail.thumbnailUrls
+          };
+        });
+      } catch {
+        // The chart itself remains useful even when Games API enrichment is
+        // blocked or has a temporary schema/network failure.
+      }
+    }
+    return { sortId, results };
+  }
+}
+
 class ExperienceRepository {
   constructor(client) { this.client = client; }
   async getMany(universeIds) {
@@ -404,11 +514,13 @@ function redactPrivatePage(page) {
 function createApiClients({ fetchImpl, authFetch, authSession } = {}) {
   const anonymous = new RobloxApiClient({ fetchImpl });
   const authenticated = new RobloxApiClient({ fetchImpl: authFetch || fetchImpl, session: authSession });
+  const experiences = new ExperienceRepository(anonymous);
   return {
     anonymous,
     authenticated,
     search: new ExperienceSearchProvider(anonymous),
-    experiences: new ExperienceRepository(anonymous),
+    discovery: new ExperienceDiscoveryProvider(anonymous, experiences),
+    experiences,
     servers: new ServerRepository(anonymous, authenticated)
   };
 }
@@ -420,9 +532,11 @@ module.exports = {
   HostRateLimiter,
   RobloxApiClient,
   ExperienceSearchProvider,
+  ExperienceDiscoveryProvider,
   ExperienceRepository,
   ServerRepository,
   flattenSearchResults,
+  flattenDiscoveryResults,
   normalizePrivatePage,
   redactPrivateServer,
   redactPrivatePage,

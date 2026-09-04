@@ -65,11 +65,11 @@ function normalizeId(value) {
   return null;
 }
 
-function normalizeExperience(value) {
+function normalizeExperience(value, { allowMissingRootPlaceId = false } = {}) {
   assertPlainObject(value, 'experience');
   const universeId = normalizeId(value.universeId ?? value.id ?? value.contentId);
   const rootPlaceId = normalizeId(value.rootPlaceId ?? value.placeId);
-  if (!universeId || !rootPlaceId) throw new ValidationError('experience is missing universeId or rootPlaceId');
+  if (!universeId || (!rootPlaceId && !allowMissingRootPlaceId)) throw new ValidationError('experience is missing universeId or rootPlaceId');
   return {
     universeId,
     rootPlaceId,
@@ -140,6 +140,20 @@ function normalizePrivateServer(value) {
   }
   if (!isCode(linkCode)) linkCode = undefined;
   const permissions = value.permissions && typeof value.permissions === 'object' ? value.permissions : {};
+  const friendsAllowed = typeof value.friendsAllowed === 'boolean' ? value.friendsAllowed
+    : typeof value.allowFriends === 'boolean' ? value.allowFriends
+      : typeof value.allowedFriends === 'boolean' ? value.allowedFriends
+        : typeof value.isFriendsAllowed === 'boolean' ? value.isFriendsAllowed
+          : typeof permissions.friendsAllowed === 'boolean' ? permissions.friendsAllowed
+            : typeof permissions.allowFriends === 'boolean' ? permissions.allowFriends
+              : typeof permissions.allowFriendsToJoin === 'boolean' ? permissions.allowFriendsToJoin
+                : undefined;
+  const users = Array.isArray(value.users) ? value.users
+    : Array.isArray(value.allowedUsers) ? value.allowedUsers
+      : Array.isArray(value.userIds) ? value.userIds
+        : Array.isArray(permissions.users) ? permissions.users
+          : Array.isArray(permissions.allowedUsers) ? permissions.allowedUsers
+            : [];
   const subscriptionRaw = value.subscription && typeof value.subscription === 'object' ? value.subscription : undefined;
   const subscription = subscriptionRaw ? {
     active: typeof subscriptionRaw.active === 'boolean' ? subscriptionRaw.active : undefined,
@@ -158,8 +172,8 @@ function normalizePrivateServer(value) {
     ownerId: normalizeId(value.ownerId ?? value.privateServerOwnerId),
     active: typeof value.active === 'boolean' ? value.active : (subscription && typeof subscription.active === 'boolean' ? subscription.active : undefined),
     subscription,
-    friendsAllowed: typeof value.friendsAllowed === 'boolean' ? value.friendsAllowed : (typeof permissions.friendsAllowed === 'boolean' ? permissions.friendsAllowed : undefined),
-    users: Array.isArray(value.users) ? value.users.map(normalizeId).filter(Boolean) : (Array.isArray(permissions.users) ? permissions.users.map(normalizeId).filter(Boolean) : []),
+    friendsAllowed,
+    users: users.map(normalizeId).filter(Boolean),
     linkCode,
     accessCode: isCode(value.accessCode ?? value.privateServerAccessCode ?? value.reservedServerAccessCode)
       ? (value.accessCode ?? value.privateServerAccessCode ?? value.reservedServerAccessCode)

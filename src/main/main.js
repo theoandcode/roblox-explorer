@@ -32,6 +32,7 @@ const {
 
 const APP_SCHEME = 'app';
 const APP_HOST = 'ui';
+const APP_NAME = 'Roblox Explorer';
 const AUTH_PARTITION = 'persist:roblox-auth';
 // Legacy private-server endpoints can drift independently of anonymous APIs.
 // Keep a deployment-time kill switch so a broken contract can be disabled
@@ -268,6 +269,7 @@ async function createAuthWindow() {
     // through its native window controls (or the explicit sign-out cleanup).
     modal: false,
     title: 'Sign in to Roblox',
+    icon: path.resolve(__dirname, '../../avatar.jpeg'),
     webPreferences: {
       session: authSession,
       nodeIntegration: false,
@@ -315,14 +317,16 @@ async function handoffToPlayer(uri) {
 
 function registerAppProtocol() {
   const rendererRoot = path.resolve(__dirname, '../renderer');
+  const avatarPath = path.resolve(__dirname, '../../avatar.jpeg');
   protocol.handle(APP_SCHEME, async (request) => {
     let parsed;
     try { parsed = new URL(request.url); } catch { return new Response('Bad request', { status: 400 }); }
     if (parsed.hostname !== APP_HOST) return new Response('Not found', { status: 404 });
     let requestedPath;
     try { requestedPath = decodeURIComponent(parsed.pathname === '/' ? '/index.html' : parsed.pathname); } catch { return new Response('Bad request', { status: 400 }); }
-    const candidate = path.resolve(rendererRoot, `.${requestedPath}`);
-    if (!candidate.startsWith(`${rendererRoot}${path.sep}`)) return new Response('Forbidden', { status: 403 });
+    const isPublicAsset = requestedPath === '/avatar.jpeg';
+    const candidate = isPublicAsset ? avatarPath : path.resolve(rendererRoot, `.${requestedPath}`);
+    if (!isPublicAsset && !candidate.startsWith(`${rendererRoot}${path.sep}`)) return new Response('Forbidden', { status: 403 });
     try { return await net.fetch(pathToFileURL(candidate).toString()); } catch { return new Response('Not found', { status: 404 }); }
   });
 }
@@ -333,7 +337,8 @@ function createMainWindow() {
     height: 860,
     minWidth: 960,
     minHeight: 640,
-    title: 'Roblox Navigator',
+    title: APP_NAME,
+    icon: path.resolve(__dirname, '../../avatar.jpeg'),
     backgroundColor: '#0f1117',
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
@@ -420,14 +425,21 @@ function setupIpc() {
     const universeId = requireId(String(input.universeId ?? ''), 'universeId');
     const fallback = input.fallback && typeof input.fallback === 'object' ? input.fallback : undefined;
     const experience = await clients.experiences.getOne(universeId, fallback);
-    store.recordRecent({
-      universeId: experience.universeId,
-      rootPlaceId: experience.rootPlaceId,
-      name: experience.name,
-      iconUrl: experience.iconUrl
-    });
+    if (input.recordRecent !== false) {
+      store.recordRecent({
+        universeId: experience.universeId,
+        rootPlaceId: experience.rootPlaceId,
+        name: experience.name,
+        iconUrl: experience.iconUrl
+      });
+    }
     return experience;
   });
+  registerHandler('get-experience-thumbnails', async (input) => {
+    assertPlainObject(input, 'thumbnail input');
+    return clients.experiences.getThumbnails(requireId(String(input.universeId ?? ''), 'universeId'));
+  });
+  registerHandler('get-top-charts', async () => clients.discovery.topCharts());
   registerHandler('list-public-servers', async (input) => {
     assertPlainObject(input, 'server input');
     return clients.servers.listPublic({
@@ -532,9 +544,10 @@ function setupIpc() {
   registerHandler('get-private-server', async (input) => {
     assertPlainObject(input, 'private server input');
     requirePrivateServerManagement();
+    optionalBoolean(input.cache, 'cache');
     const status = await authStatus();
     if (!status.authenticated) throw new RobloxApiError('Sign in to Roblox to view private servers', { code: 'AUTH_REQUIRED', status: 401 });
-    const server = await clients.servers.getPrivate(requireId(String(input.vipServerId ?? ''), 'vipServerId'));
+    const server = await clients.servers.getPrivate(requireId(String(input.vipServerId ?? ''), 'vipServerId'), { cache: input.cache !== false });
     return redactPrivateServer(server);
   });
   registerHandler('join-private-server', async (input) => {
@@ -588,6 +601,10 @@ async function runConnectivityCheck() {
 
 async function bootstrap() {
   await app.whenReady();
+  app.setName(APP_NAME);
+  const avatarPath = path.resolve(__dirname, '../../avatar.jpeg');
+  if (typeof app.setAboutPanelOptions === 'function') app.setAboutPanelOptions({ applicationName: APP_NAME, applicationIcon: avatarPath });
+  if (process.platform === 'darwin' && app.dock && typeof app.dock.setIcon === 'function') app.dock.setIcon(avatarPath);
   registerAppProtocol();
   configurePermissions();
   store = new LocalStore(path.join(app.getPath('userData'), 'state.json'), safeStorage);
@@ -602,7 +619,7 @@ async function bootstrap() {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 bootstrap().catch((error) => {
-  console.error('Failed to start Roblox Navigator:', safeError(error));
+  console.error(`Failed to start ${APP_NAME}:`, safeError(error));
   app.quit();
 });
 

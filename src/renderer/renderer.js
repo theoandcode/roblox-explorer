@@ -5,6 +5,8 @@ const state = {
   query: '',
   searchSessionId: undefined,
   searchPageToken: undefined,
+  searchRouteQuery: undefined,
+  searchRequestId: 0,
   selected: undefined,
   details: undefined,
   publicCursor: undefined,
@@ -12,15 +14,33 @@ const state = {
   auth: { authenticated: false },
   authProxy: { authProxy: '', source: 'system', configured: false, active: false, valid: true },
   favorites: new Set(),
+  recents: [],
   savedJoins: [],
-  permissionsServerId: undefined
+  privateAccessible: [],
+  privateOwned: [],
+  privateLoading: false,
+  permissionsServerId: undefined,
+  permissionsOriginalUsers: [],
+  permissionsSettingsLoaded: false,
+  experienceCache: new Map(),
+  thumbnailCache: new Map(),
+  thumbnailPromises: new Map(),
+  charts: [],
+  chartsLoaded: false,
+  chartsError: undefined,
+  homeLoadPromise: undefined,
+  routeRequest: 0
 };
 state.searchResults = new Map();
 
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char]);
 const formatNumber = (value) => Number(value || 0).toLocaleString();
-const formatDate = (value) => value ? new Date(value).toLocaleDateString() : '';
+const formatDate = (value) => {
+  if (!value) return '';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleDateString();
+};
 
 function showToast(message, kind = 'info', durationMs = 4200) {
   if (!message) return;
@@ -63,94 +83,374 @@ function setMessage(message, kind = 'warn') {
   if (message) showToast(message, kind);
 }
 
-function showSection(id, visible) { $(id).classList.toggle('hidden', !visible); }
+function showSection(id, visible) {
+  const node = $(id);
+  if (node) node.classList.toggle('hidden', !visible);
+}
 
-function button(label, className, attrs = '') { return `<button class="button ${className}" ${attrs}>${escapeHtml(label)}</button>`; }
-
-function imageOrPlaceholder(url, alt, className = 'game-art') {
-  if (!url) return `<div class="${className}" role="img" aria-label="No image available"></div>`;
-  return `<img class="${className}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" loading="lazy" referrerpolicy="no-referrer" />`;
+function button(label, className, attrs = '') {
+  return `<button class="button ${className}" type="button" ${attrs}>${escapeHtml(label)}</button>`;
 }
 
 function selectedLaunchFormat() {
   return $('launch-format')?.value === 'legacy' ? 'legacy' : 'modern';
 }
 
+function openDialog(id) {
+  const dialog = $(id);
+  if (!dialog) return;
+  for (const other of document.querySelectorAll('dialog[open]')) {
+    if (other === dialog) continue;
+    if (typeof other.close === 'function') other.close();
+    else other.removeAttribute('open');
+  }
+  if (!dialog.open) {
+    try { dialog.showModal(); } catch { dialog.setAttribute('open', ''); }
+  }
+}
+
+function closeDialog(id) {
+  const dialog = $(id);
+  if (!dialog) return;
+  if (dialog.open && typeof dialog.close === 'function') dialog.close();
+  else dialog.removeAttribute('open');
+}
+
+function closeAllDialogs() {
+  for (const dialog of document.querySelectorAll('dialog[open]')) {
+    if (typeof dialog.close === 'function') dialog.close();
+    else dialog.removeAttribute('open');
+  }
+}
+
+function parseRoute() {
+  const raw = window.location.hash.replace(/^#/, '') || '/home';
+  const [path, queryString = ''] = raw.split('?');
+  const parts = path.split('/').filter(Boolean);
+  if (parts[0] === 'search') {
+    return { name: 'search', query: new URLSearchParams(queryString).get('q')?.trim() || '' };
+  }
+  if (parts[0] === 'experience' && /^[1-9][0-9]{0,19}$/.test(parts[1] || '')) {
+    return { name: 'experience', universeId: parts[1] };
+  }
+  return { name: 'home' };
+}
+
+function navigate(path, { replace = false } = {}) {
+  const next = path.startsWith('#') ? path : `#${path.startsWith('/') ? path : `/${path}`}`;
+  if (window.location.hash === next) void renderRoute();
+  else if (replace) window.location.replace(next);
+  else window.location.hash = next;
+}
+
+function setActivePage(name) {
+  for (const id of ['home-page', 'search-page', 'details-page']) showSection(id, id === `${name}-page` || (name === 'experience' && id === 'details-page'));
+  $('nav-home-button')?.classList.toggle('active', name === 'home');
+}
+
+function experienceImageMarkup(game, className = 'tile-art') {
+  const imageUrl = game?.thumbnailUrls?.[0] || game?.iconUrl;
+  if (imageUrl) return `<img class="${className}" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(game.name)}" loading="lazy" referrerpolicy="no-referrer" />`;
+  return `<div class="${className} image-placeholder" data-thumb-id="${escapeHtml(game?.universeId || '')}" role="img" aria-label="No thumbnail available"></div>`;
+}
+
+function attachImageFallbacks(container) {
+  if (!container) return;
+  for (const image of container.querySelectorAll('img:not([data-image-bound])')) {
+    image.dataset.imageBound = 'true';
+    image.addEventListener('error', () => {
+      const placeholder = document.createElement('div');
+      placeholder.className = `${image.className} image-placeholder`;
+      placeholder.setAttribute('role', 'img');
+      placeholder.setAttribute('aria-label', 'Thumbnail unavailable');
+      placeholder.dataset.thumbFailed = 'true';
+      image.replaceWith(placeholder);
+    }, { once: true });
+  }
+}
+
+function replaceThumbnailPlaceholders(container, universeId, url, alt) {
+  if (!container || !url) return;
+  for (const placeholder of container.querySelectorAll('[data-thumb-id]')) {
+    if (placeholder.dataset.thumbId !== String(universeId)) continue;
+    const image = document.createElement('img');
+    image.className = placeholder.className.replace(/\bimage-placeholder\b/g, '').trim() || 'tile-art';
+    image.src = url;
+    image.alt = alt || 'Experience thumbnail';
+    image.loading = 'lazy';
+    image.referrerPolicy = 'no-referrer';
+    placeholder.replaceWith(image);
+  }
+  attachImageFallbacks(container);
+}
+
+async function ensureThumbnails(universeId, container) {
+  const id = String(universeId || '');
+  if (!/^[1-9][0-9]{0,19}$/.test(id)) return;
+  if (state.thumbnailCache.has(id)) {
+    const cached = state.thumbnailCache.get(id);
+    replaceThumbnailPlaceholders(container, id, cached.thumbnailUrls?.[0] || cached.iconUrl, state.experienceCache.get(id)?.name);
+    return;
+  }
+  if (state.thumbnailPromises.has(id)) {
+    try {
+      const pending = await state.thumbnailPromises.get(id);
+      replaceThumbnailPlaceholders(container, id, pending?.thumbnailUrls?.[0] || pending?.iconUrl, state.experienceCache.get(id)?.name);
+    } catch { /* the original request records a placeholder failure */ }
+    return;
+  }
+  const pending = api.getExperienceThumbnails({ universeId: id });
+  state.thumbnailPromises.set(id, pending);
+  try {
+    const thumbnails = await pending;
+    state.thumbnailCache.set(id, thumbnails || {});
+    const game = state.experienceCache.get(id);
+    if (game && !game.iconUrl && thumbnails?.iconUrl) game.iconUrl = thumbnails.iconUrl;
+    if (game && (!Array.isArray(game.thumbnailUrls) || !game.thumbnailUrls.length) && thumbnails?.thumbnailUrls?.length) game.thumbnailUrls = thumbnails.thumbnailUrls;
+    replaceThumbnailPlaceholders(container, id, thumbnails?.thumbnailUrls?.[0] || thumbnails?.iconUrl, game?.name);
+  } catch {
+    for (const placeholder of container?.querySelectorAll?.('[data-thumb-id]') || []) {
+      if (placeholder.dataset.thumbId === id) placeholder.dataset.thumbFailed = 'true';
+    }
+  } finally {
+    state.thumbnailPromises.delete(id);
+  }
+}
+
+function hydrateGridImages(container) {
+  if (!container) return;
+  attachImageFallbacks(container);
+  const ids = [...new Set([...container.querySelectorAll('[data-thumb-id]')].map((node) => node.dataset.thumbId).filter(Boolean))];
+  for (const id of ids) void ensureThumbnails(id, container);
+}
+
+function experienceTile(game) {
+  if (!game?.universeId) return null;
+  const id = String(game.universeId);
+  state.experienceCache.set(id, game);
+  const description = (game.description || 'No description available.').trim();
+  const favorite = state.favorites.has(id);
+  const tile = document.createElement('article');
+  tile.className = 'experience-tile';
+  tile.tabIndex = 0;
+  tile.dataset.action = 'details';
+  tile.dataset.id = id;
+  const playAction = game.rootPlaceId ? button('Play', 'primary', `data-action="play" data-place-id="${escapeHtml(game.rootPlaceId)}"`) : '';
+  tile.innerHTML = `<div class="tile-media">${experienceImageMarkup(game)}</div><div class="tile-overlay"><div class="tile-copy"><h3 title="${escapeHtml(game.name)}">${escapeHtml(game.name)}</h3><p>${escapeHtml(description)}</p><div class="tile-meta"><span>◉ ${formatNumber(game.playerCount)} playing</span><span>${escapeHtml(game.creator?.name || 'Roblox')}</span></div></div><div class="tile-actions">${button('Details', 'secondary', `data-action="details" data-id="${escapeHtml(id)}"`)}${playAction}${button(favorite ? '★' : '☆', 'icon', `data-action="favorite" data-id="${escapeHtml(id)}" aria-label="${favorite ? 'Remove from favorites' : 'Add to favorites'}"`)}</div></div>`;
+  return tile;
+}
+
+function renderTileGrid(node, games, emptyText) {
+  if (!node) return;
+  const validGames = (games || []).filter((game) => game?.universeId);
+  if (!validGames.length) {
+    node.className = 'tile-grid empty-state';
+    node.innerHTML = `<p class="muted">${escapeHtml(emptyText)}</p>`;
+    return;
+  }
+  node.className = 'tile-grid';
+  node.innerHTML = '';
+  for (const game of validGames) {
+    const tile = experienceTile(game);
+    if (tile) node.appendChild(tile);
+  }
+  hydrateGridImages(node);
+}
+
+async function hydrateExperiences(ids, fallbackById = new Map()) {
+  const unique = [...new Set((ids || []).map(String).filter((id) => /^[1-9][0-9]{0,19}$/.test(id)))];
+  const missing = unique.filter((id) => !state.experienceCache.has(id));
+  await Promise.all(missing.map(async (id) => {
+    try {
+      const game = await api.getExperience({ universeId: id, fallback: fallbackById.get(id), recordRecent: false });
+      if (game?.universeId) state.experienceCache.set(String(game.universeId), game);
+    } catch {
+      const fallback = fallbackById.get(id);
+      if (fallback?.universeId && fallback?.rootPlaceId) state.experienceCache.set(id, fallback);
+    }
+  }));
+  return unique.map((id) => state.experienceCache.get(id)).filter(Boolean);
+}
+
+function renderHomeRails() {
+  const recentFallback = new Map((state.recents || []).map((entry) => [String(entry.universeId), entry]));
+  const recents = (state.recents || []).map((entry) => state.experienceCache.get(String(entry.universeId)) || entry);
+  const favorites = [...state.favorites].map((id) => state.experienceCache.get(String(id))).filter(Boolean);
+  renderTileGrid($('recent-grid'), recents, 'Nothing here yet.');
+  renderTileGrid($('favorites-grid'), favorites, 'Favorite an experience to keep it close.');
+  const chartMessage = state.chartsError ? `Top charts unavailable: ${state.chartsError}` : (state.chartsLoaded ? 'No chart data is available right now.' : 'Loading charts…');
+  renderTileGrid($('charts-grid'), state.charts, chartMessage);
+  hydrateGridImages($('recent-grid'));
+  hydrateGridImages($('favorites-grid'));
+  // Keep this map alive for the next refresh; entries are also useful if a
+  // details request has to fall back to the local recent snapshot.
+  for (const [id, value] of recentFallback) if (!state.experienceCache.has(id)) state.experienceCache.set(id, value);
+}
+
+async function loadHome({ force = false } = {}) {
+  if (!force && state.homeLoadPromise) return state.homeLoadPromise;
+  state.homeLoadPromise = (async () => {
+    const fallback = new Map((state.recents || []).map((entry) => [String(entry.universeId), entry]));
+    const ids = [...new Set([...(state.recents || []).map((entry) => entry.universeId), ...state.favorites])];
+    await hydrateExperiences(ids, fallback);
+    renderHomeRails();
+    state.chartsError = undefined;
+    try {
+      const chartPage = await api.getTopCharts();
+      state.charts = Array.isArray(chartPage?.results) ? chartPage.results : [];
+    } catch (error) {
+      state.charts = [];
+      state.chartsError = error?.message || 'Could not load top charts.';
+    }
+    state.chartsLoaded = true;
+    renderHomeRails();
+  })().finally(() => { state.homeLoadPromise = undefined; });
+  return state.homeLoadPromise;
+}
+
 function renderResults(page, append = false) {
   const grid = $('results-grid');
-  if (!append && !page.results.length) {
-    grid.className = 'card-grid empty-state';
-    grid.innerHTML = '<div class="empty-icon">⌕</div><p>No experiences matched that search.</p>';
+  const results = Array.isArray(page?.results) ? page.results : [];
+  if (!append && !results.length) {
+    grid.className = 'tile-grid empty-state';
+    grid.innerHTML = '<p class="muted">No experiences matched that search.</p>';
   } else {
-    if (!append) { grid.className = 'card-grid'; grid.innerHTML = ''; }
-    for (const game of page.results) {
-      state.searchResults.set(game.universeId, game);
-      const card = document.createElement('article');
-      card.className = 'game-card';
-      card.dataset.universeId = game.universeId;
-      card.innerHTML = `${imageOrPlaceholder(game.iconUrl, game.name)}<div class="game-card-body"><h3 title="${escapeHtml(game.name)}">${escapeHtml(game.name)}</h3><p>${escapeHtml(game.description || 'No description available.')}</p><div class="game-meta"><span>◉ ${formatNumber(game.playerCount)} playing</span><span>${escapeHtml(game.creator?.name || 'Unknown creator')}</span></div><div class="card-actions">${button('Details', 'secondary', `data-action="details" data-id="${game.universeId}"`)}${button('Play', 'primary', `data-action="play" data-place-id="${game.rootPlaceId}"`)}</div></div>`;
-      grid.appendChild(card);
+    if (!append) { grid.className = 'tile-grid'; grid.innerHTML = ''; }
+    for (const game of results) {
+      state.searchResults.set(String(game.universeId), game);
+      const tile = experienceTile(game);
+      if (tile) grid.appendChild(tile);
     }
+    hydrateGridImages(grid);
   }
-  $('results-title').textContent = state.query ? `Results for “${state.query}”` : 'Search for an experience';
-  $('load-more-button').classList.toggle('hidden', !page.nextPageToken);
+  $('results-title').textContent = state.query ? `Results for “${state.query}”` : 'Experiences';
+  $('load-more-button').classList.toggle('hidden', !page?.nextPageToken);
 }
 
 async function search(query, append = false) {
   if (!query.trim()) { setMessage('Enter a search term first.'); return; }
   setMessage('');
-  if (!append) { state.query = query.trim(); state.searchSessionId = undefined; state.searchPageToken = undefined; $('results-grid').innerHTML = '<div class="empty-state"><p>Searching…</p></div>'; }
+  const requestId = append ? state.searchRequestId : ++state.searchRequestId;
+  if (!append) {
+    state.query = query.trim();
+    state.searchSessionId = undefined;
+    state.searchPageToken = undefined;
+    $('results-grid').className = 'tile-grid empty-state';
+    $('results-grid').innerHTML = '<p class="muted">Searching…</p>';
+  }
   try {
     const page = await api.searchExperiences({ query: state.query, sessionId: state.searchSessionId, pageToken: state.searchPageToken });
+    if (requestId !== state.searchRequestId || (!append && state.searchRouteQuery !== state.query)) return;
     state.searchSessionId = page.sessionId;
     state.searchPageToken = page.nextPageToken;
     renderResults(page, append);
-  } catch (error) { renderResults({ results: [], nextPageToken: undefined }); setMessage(error.message || 'Search failed.'); }
+  } catch (error) {
+    if (requestId !== state.searchRequestId) return;
+    renderResults({ results: [], nextPageToken: undefined });
+    setMessage(error.message || 'Search failed.');
+  }
 }
 
-async function selectExperience(universeId) {
-  setMessage('');
-  closePermissionsEditor();
-  try {
-    state.details = await api.getExperience({ universeId, fallback: state.searchResults.get(universeId) });
-    state.selected = state.details;
-    $('experience-title').textContent = state.details.name;
-    renderExperience();
-    showSection('results-section', false);
-    showSection('experience-section', true);
-    showSection('servers-section', true);
-    showSection('my-private-section', state.auth.authenticated);
-    showSection('owned-private-section', state.auth.authenticated);
-    await listPublicServers();
-    if (state.auth.authenticated) await listOwnedPrivateServers();
-  } catch (error) { setMessage(error.message || 'Could not load that experience.'); }
+function renderExperienceLoading() {
+  $('experience-title').textContent = 'Loading…';
+  $('experience-detail').innerHTML = '<div class="loading-card"><span class="spinner"></span><span>Loading experience</span></div>';
+  $('private-summary-copy').textContent = 'Loading private-server access…';
+  $('servers-list').innerHTML = '<p class="muted">Loading live servers…</p>';
 }
 
 function renderExperience() {
   const game = state.details;
+  if (!game) return;
   const favorite = state.favorites.has(game.universeId);
-  $('experience-detail').innerHTML = `<div>${imageOrPlaceholder(game.thumbnailUrls?.[0] || game.iconUrl, game.name, 'experience-art')}</div><div class="detail-card"><h3>${escapeHtml(game.name)}</h3><p class="muted">by ${escapeHtml(game.creator?.name || 'Unknown creator')} ${game.contentMaturity ? `· ${escapeHtml(game.contentMaturity)}` : ''}</p><p class="detail-description">${escapeHtml(game.description || 'No description available.')}</p><div class="stat-row"><div class="stat"><strong>${formatNumber(game.playerCount)}</strong><span>playing</span></div><div class="stat"><strong>${formatNumber(game.visits)}</strong><span>visits</span></div><div class="stat"><strong>${formatNumber(game.maxPlayers)}</strong><span>server size</span></div></div><div class="detail-actions">${button('Play', 'primary', `data-action="play" data-place-id="${game.rootPlaceId}"`)}${button(favorite ? '★ Favorited' : '☆ Favorite', 'secondary', `data-action="favorite" data-id="${game.universeId}"`)}${button('List private servers', 'ghost', 'data-action="private-for-place"')}</div></div>`;
+  $('experience-title').textContent = game.name;
+  $('experience-detail').innerHTML = `<div>${experienceImageMarkup(game, 'experience-art')}</div><div class="detail-card"><h2>${escapeHtml(game.name)}</h2><p class="muted">by ${escapeHtml(game.creator?.name || 'Unknown creator')} ${game.contentMaturity ? `· ${escapeHtml(game.contentMaturity)}` : ''}</p><p class="detail-description">${escapeHtml(game.description || 'No description available.')}</p><div class="stat-row"><div class="stat"><strong>${formatNumber(game.playerCount)}</strong><span>playing</span></div><div class="stat"><strong>${formatNumber(game.visits)}</strong><span>visits</span></div><div class="stat"><strong>${formatNumber(game.maxPlayers)}</strong><span>server size</span></div></div><div class="detail-actions">${button('Play', 'primary', `data-action="play" data-place-id="${escapeHtml(game.rootPlaceId)}"`)}${button(favorite ? '★ Favorited' : '☆ Favorite', 'secondary', `data-action="favorite" data-id="${escapeHtml(game.universeId)}"`)}${button('Private servers', 'ghost', 'data-action="scroll-private"')}</div></div>`;
+  hydrateGridImages($('experience-detail'));
+  updatePrivateSummary();
+}
+
+function updatePrivateSummary() {
+  const copy = $('private-summary-copy');
+  const open = $('open-private-button');
+  if (!copy || !open) return;
+  if (!state.selected) {
+    copy.textContent = 'Choose an experience to load private servers.';
+    open.disabled = true;
+    return;
+  }
+  open.disabled = false;
+  if (!state.auth.authenticated) {
+    copy.textContent = 'Sign in to load servers for this experience.';
+    open.textContent = 'Sign in to manage';
+    return;
+  }
+  open.textContent = 'Your private servers';
+  if (state.privateLoading) {
+    copy.textContent = 'Loading joinable and owned servers…';
+    return;
+  }
+  const joinable = state.privateAccessible.length;
+  const owned = state.privateOwned.length;
+  copy.textContent = `${joinable} joinable · ${owned} owned · Roblox checks admission`;
+}
+
+async function loadExperienceRoute(universeId) {
+  const requestId = ++state.routeRequest;
+  state.selected = undefined;
+  state.details = undefined;
+  state.privateAccessible = [];
+  state.privateOwned = [];
+  state.privateLoading = false;
+  setActivePage('experience');
+  showSection('servers-section', true);
+  renderExperienceLoading();
+  closePermissionsEditor();
+  try {
+    const fallback = state.searchResults.get(String(universeId)) || state.experienceCache.get(String(universeId));
+    const details = await api.getExperience({ universeId, fallback });
+    if (requestId !== state.routeRequest) return;
+    state.details = details;
+    state.selected = details;
+    state.experienceCache.set(String(details.universeId), details);
+    showSection('owned-private-section', state.auth.authenticated);
+    renderOwnedPrivateSectionState();
+    renderExperience();
+    await listPublicServers();
+    if (state.auth.authenticated) await loadPrivateForSelected();
+    else updatePrivateSummary();
+  } catch (error) {
+    if (requestId !== state.routeRequest) return;
+    setMessage(error.message || 'Could not load that experience.');
+    navigate('/home');
+  }
 }
 
 async function listPublicServers(cursor) {
   if (!state.selected) return;
+  const selectedUniverseId = state.selected.universeId;
+  const selectedPlaceId = state.selected.rootPlaceId;
   const list = $('servers-list');
   if (!cursor) { list.innerHTML = '<p class="muted">Loading live servers…</p>'; state.publicCursor = undefined; }
   try {
-    const page = await api.listPublicServers({ placeId: state.selected.rootPlaceId, cursor, excludeFullGames: $('exclude-full-checkbox').checked, limit: 25, sortOrder: 'Asc' });
+    const page = await api.listPublicServers({ placeId: selectedPlaceId, cursor, excludeFullGames: $('exclude-full-checkbox').checked, limit: 25, sortOrder: 'Asc' });
+    if (state.selected?.universeId !== selectedUniverseId) return;
     state.publicCursor = page.nextPageCursor;
     if (!page.data.length) list.innerHTML = '<p class="muted">No public servers are visible right now.</p>';
     else {
       if (!cursor) list.innerHTML = '';
       for (const server of page.data) {
-        const row = document.createElement('div'); row.className = 'server-row';
-        row.innerHTML = `<div><strong>${escapeHtml(server.id.slice(0, 8))}…</strong><small>${escapeHtml(server.id)}</small></div><div class="server-metric">${server.playing}/${server.maxPlayers}<small>players</small></div><div class="server-metric">${server.ping ?? '—'} ms<small>ping</small></div><div class="server-metric">${server.fps ? Math.round(server.fps) : '—'}<small>FPS</small></div>${button('Join', 'primary', `data-action="server-join" data-job-id="${escapeHtml(server.id)}" data-place-id="${state.selected.rootPlaceId}"`)}`;
+        const row = document.createElement('div');
+        row.className = 'server-row';
+        row.innerHTML = `<div><strong>${escapeHtml(server.id.slice(0, 8))}…</strong><small>${escapeHtml(server.id)}</small></div><div class="server-metric">${server.playing}/${server.maxPlayers}<small>players</small></div><div class="server-metric">${server.ping ?? '—'} ms<small>ping</small></div><div class="server-metric">${server.fps ? Math.round(server.fps) : '—'}<small>FPS</small></div>${button('Join', 'primary', `data-action="server-join" data-job-id="${escapeHtml(server.id)}" data-place-id="${escapeHtml(selectedPlaceId)}"`)}`;
         list.appendChild(row);
       }
     }
-    $('server-summary').textContent = `${page.data.length} server${page.data.length === 1 ? '' : 's'} shown · refreshes are deliberately gentle`;
+    $('server-summary').textContent = `${page.data.length} server${page.data.length === 1 ? '' : 's'} shown`;
     $('load-more-servers-button').classList.toggle('hidden', !page.nextPageCursor);
-  } catch (error) { list.innerHTML = `<p class="muted">${escapeHtml(error.message || 'Could not load servers.')}</p>`; setMessage(error.message || 'Could not load servers.'); }
+  } catch (error) {
+    if (state.selected?.universeId !== selectedUniverseId) return;
+    list.innerHTML = `<p class="muted">${escapeHtml(error.message || 'Could not load servers.')}</p>`;
+    setMessage(error.message || 'Could not load servers.');
+  }
 }
 
 async function launch(intent) {
@@ -165,19 +465,30 @@ async function launch(intent) {
 function renderSavedJoins() {
   const node = $('saved-private-list');
   if (!state.savedJoins.length) { node.innerHTML = '<p class="muted">No saved codes yet.</p>'; return; }
-  node.innerHTML = state.savedJoins.map((entry) => `<div class="saved-entry"><div><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.kind)}${entry.placeId ? ` · place ${escapeHtml(entry.placeId)}` : ''}</span></div><div class="saved-entry-actions">${button('Join', 'secondary', `data-action="saved-join" data-id="${escapeHtml(entry.id)}"`)}<button class="button danger" data-action="saved-delete" data-id="${escapeHtml(entry.id)}">×</button></div></div>`).join('');
+  node.innerHTML = state.savedJoins.map((entry) => `<div class="saved-entry"><div><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.kind)}${entry.placeId ? ` · place ${escapeHtml(entry.placeId)}` : ''}</span></div><div class="saved-entry-actions">${button('Join', 'secondary', `data-action="saved-join" data-id="${escapeHtml(entry.id)}"`)}<button class="button danger" type="button" data-action="saved-delete" data-id="${escapeHtml(entry.id)}">×</button></div></div>`).join('');
 }
 
-async function refreshSavedJoins() { try { state.savedJoins = await api.listSavedPrivateJoins(); renderSavedJoins(); } catch (error) { setMessage(error.message || 'Could not load saved links.'); } }
+async function refreshSavedJoins() {
+  try { state.savedJoins = await api.listSavedPrivateJoins(); renderSavedJoins(); }
+  catch (error) { setMessage(error.message || 'Could not load saved links.'); }
+}
 
 function renderAuth() {
-  $('auth-button').textContent = state.auth.authenticated ? 'Signed in' : 'Sign in';
-  $('auth-button').classList.toggle('primary', state.auth.authenticated);
-  $('auth-button').classList.toggle('secondary', !state.auth.authenticated);
-  showSection('my-private-section', state.auth.authenticated && Boolean(state.selected));
-  showSection('owned-private-section', state.auth.authenticated && Boolean(state.selected));
-  if (!state.auth.authenticated) closePermissionsEditor();
+  const signedIn = state.auth.authenticated === true;
+  $('auth-button').textContent = signedIn ? 'Signed in' : 'Sign in';
+  $('auth-button').classList.toggle('primary', signedIn);
+  $('auth-button').classList.toggle('secondary', !signedIn);
+  showSection('owned-private-section', signedIn && Boolean(state.selected));
+  if (!signedIn) {
+    state.privateLoading = false;
+    state.privateAccessible = [];
+    state.privateOwned = [];
+    $('my-private-list').innerHTML = '<p class="muted">Sign in to list private servers.</p>';
+    $('owned-private-list').innerHTML = '<p class="muted">Sign in to load your servers.</p>';
+    closePermissionsEditor();
+  }
   renderOwnedPrivateSectionState();
+  updatePrivateSummary();
 }
 
 function renderOwnedPrivateSectionState() {
@@ -190,29 +501,71 @@ function renderOwnedPrivateSectionState() {
   const enabled = state.auth.authenticated && state.auth.privatePurchasesEnabled === true;
   buttonNode.disabled = !enabled;
   buttonNode.title = enabled ? '' : 'Private-server creation is disabled until the current Roblox purchase contract is enabled';
-  help.textContent = enabled
-    ? 'Creation is enabled. Roblox will show the final price and apply its purchase rules.'
-    : 'Creation is disabled until the current Roblox purchase contract is enabled.';
+  help.textContent = enabled ? 'Creation is enabled. Roblox will show the final price and apply its purchase rules.' : 'Creation is disabled until the current Roblox purchase contract is enabled.';
 }
 
 function closePermissionsEditor() {
   state.permissionsServerId = undefined;
+  state.permissionsOriginalUsers = [];
+  state.permissionsSettingsLoaded = false;
   $('permissions-private-form')?.classList.add('hidden');
 }
 
-function openPermissionsEditor(target) {
-  if (!target?.dataset?.id) return;
-  state.permissionsServerId = target.dataset.id;
-  $('permissions-private-name').textContent = `Editing access for ${target.dataset.name || 'your private server'}.`;
-  $('permissions-private-friends').checked = target.dataset.friendsAllowed === 'true';
-  $('permissions-private-add').value = '';
+function permissionUserIds(value) {
+  return (Array.isArray(value) ? value : String(value || '').split(',')).map(String).map((userId) => userId.trim()).filter((userId) => /^[1-9][0-9]{0,19}$/.test(userId));
+}
+
+function applyPermissionsEditorState(server) {
+  const users = permissionUserIds(server?.users);
+  state.permissionsOriginalUsers = [...new Set(users)];
+  $('permissions-private-name').textContent = `Editing access for ${server?.name || 'your private server'}.`;
+  $('permissions-private-friends').checked = server?.friendsAllowed === true;
+  $('permissions-private-add').value = state.permissionsOriginalUsers.join(', ');
   $('permissions-private-remove').value = '';
-  $('permissions-private-form').classList.remove('hidden');
-  $('permissions-private-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function openPermissionsEditor(target) {
+  if (!target?.dataset?.id) return;
+  const serverId = target.dataset.id;
+  const form = $('permissions-private-form');
+  const fallback = {
+    id: serverId,
+    name: target.dataset.name || 'your private server',
+    friendsAllowed: target.dataset.friendsAllowed === 'true' ? true : target.dataset.friendsAllowed === 'false' ? false : undefined,
+    users: permissionUserIds(target.dataset.users)
+  };
+  state.permissionsServerId = serverId;
+  state.permissionsSettingsLoaded = false;
+  applyPermissionsEditorState(fallback);
+  $('permissions-private-name').textContent = `Loading access for ${fallback.name}…`;
+  form.classList.remove('hidden');
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const controls = [...form.querySelectorAll('input, button[type="submit"]')];
+  controls.forEach((control) => { control.disabled = true; });
+  try {
+    const details = await api.getPrivateServer({ vipServerId: serverId, cache: false });
+    if (state.permissionsServerId !== serverId) return;
+    const merged = {
+      ...fallback,
+      ...details,
+      friendsAllowed: typeof details?.friendsAllowed === 'boolean' ? details.friendsAllowed : fallback.friendsAllowed,
+      users: Array.isArray(details?.users) && (details.users.length || !fallback.users.length) ? details.users : fallback.users
+    };
+    applyPermissionsEditorState(merged);
+    state.permissionsSettingsLoaded = true;
+  } catch (error) {
+    if (state.permissionsServerId === serverId) setMessage(error.message || 'Could not load current private-server settings.');
+  } finally {
+    if (state.permissionsServerId === serverId) {
+      controls.forEach((control) => { control.disabled = false; });
+      if (!state.permissionsSettingsLoaded) form.querySelector('button[type="submit"]')?.setAttribute('disabled', '');
+    }
+  }
 }
 
 async function refreshAuth() {
-  try { state.auth = await api.getAuthStatus(); renderAuth(); } catch { state.auth = { authenticated: false }; renderAuth(); }
+  try { state.auth = await api.getAuthStatus(); renderAuth(); }
+  catch { state.auth = { authenticated: false }; renderAuth(); }
 }
 
 function handleAuthStateChanged(status) {
@@ -223,10 +576,7 @@ function handleAuthStateChanged(status) {
   void refreshAuthProxyConfig();
   if (!wasAuthenticated && state.auth.authenticated) {
     setMessage('Signed in to Roblox.', 'ok');
-    if (state.selected) {
-      void listPrivateServers();
-      void listOwnedPrivateServers();
-    }
+    if (state.selected) void loadPrivateForSelected();
   }
 }
 
@@ -238,9 +588,7 @@ function renderAuthProxyConfig() {
   const statusText = config.valid === false ? 'Invalid proxy' : config.active ? 'Proxy active for login' : config.source === 'saved' ? 'Saved for sign-in' : config.source === 'environment' ? 'Environment fallback' : 'System proxy';
   status.textContent = statusText;
   status.className = `status-pill ${config.valid === false ? 'error' : config.active ? 'warn' : config.configured ? 'ok' : 'neutral'}`;
-  $('auth-proxy-help').textContent = config.valid === false
-    ? (config.error || 'Enter an HTTP(S), SOCKS4, or SOCKS5 proxy URL without credentials or a path.')
-    : 'Leave empty to use the operating-system proxy. A saved proxy is used only while the isolated Roblox sign-in window is open, then the session switches back to direct networking.';
+  $('auth-proxy-help').textContent = config.valid === false ? (config.error || 'Enter an HTTP(S), SOCKS4, or SOCKS5 proxy URL without credentials or a path.') : 'Leave empty to use the operating-system proxy. A saved proxy is used only while the isolated Roblox sign-in window is open.';
 }
 
 async function refreshAuthProxyConfig() {
@@ -253,9 +601,7 @@ async function saveAuthProxy(value) {
     state.authProxy = await api.setAuthProxy({ proxy: value });
     renderAuthProxyConfig();
     setMessage(value ? 'Login proxy saved for the next Roblox sign-in.' : 'Login proxy cleared; using the system proxy.', 'ok');
-  } catch (error) {
-    setMessage(error.message || 'Could not save the login proxy.');
-  }
+  } catch (error) { setMessage(error.message || 'Could not save the login proxy.'); }
 }
 
 function privateJoinButton(server) {
@@ -269,7 +615,7 @@ function privateSubscriptionAction(server) {
   if (typeof server.active !== 'boolean') return '';
   if (server.active === true) return button('Cancel', 'ghost', `data-action="subscription-private" data-id="${escapeHtml(server.id)}" data-active="true"`);
   if (state.auth.privatePurchasesEnabled) return button('Renew', 'ghost', `data-action="subscription-private" data-id="${escapeHtml(server.id)}" data-active="false"`);
-  return '<button class="button ghost" disabled title="Renewal is disabled until its current Robux request contract is verified">Renew unavailable</button>';
+  return '<button class="button ghost" type="button" disabled title="Renewal is disabled until its current Robux request contract is verified">Renew unavailable</button>';
 }
 
 function renderPrivateServerEntry(server, manage = false) {
@@ -277,49 +623,79 @@ function renderPrivateServerEntry(server, manage = false) {
   const subscriptionSummary = subscription?.expirationDate ? ` · expires ${formatDate(subscription.expirationDate)}` : (subscription?.renewalDate ? ` · renewal ${formatDate(subscription.renewalDate)}` : '');
   const actions = [privateJoinButton(server)];
   if (manage) {
-    const permissionAttrs = `data-action="permissions-private" data-id="${escapeHtml(server.id)}" data-name="${escapeHtml(server.name)}" data-friends-allowed="${server.friendsAllowed === true ? 'true' : 'false'}"`;
+    const existingUsers = Array.isArray(server.users) ? server.users.map(String).filter((userId) => /^[1-9][0-9]{0,19}$/.test(userId)) : [];
+    const friendsAllowed = typeof server.friendsAllowed === 'boolean' ? String(server.friendsAllowed) : '';
+    const permissionAttrs = `data-action="permissions-private" data-id="${escapeHtml(server.id)}" data-name="${escapeHtml(server.name)}" data-friends-allowed="${friendsAllowed}" data-users="${escapeHtml(existingUsers.join(', '))}"`;
     actions.push(button('Manage access', 'ghost', permissionAttrs), privateSubscriptionAction(server));
   }
-  return `<div class="private-entry"><div><strong>${escapeHtml(server.name)}</strong><span>${server.placeId ? `place ${escapeHtml(server.placeId)}` : ''}${server.active === false ? ' · inactive' : ''}${server.friendsAllowed === true ? ' · friends allowed' : ''}${subscriptionSummary}</span></div><div class="saved-entry-actions">${actions.join('')}</div></div>`;
+  const userSummary = manage && Array.isArray(server.users) && server.users.length ? ` · ${server.users.length} user${server.users.length === 1 ? '' : 's'} allowed` : '';
+  return `<div class="private-entry"><div><strong>${escapeHtml(server.name)}</strong><span>${server.placeId ? `place ${escapeHtml(server.placeId)}` : ''}${server.active === false ? ' · inactive' : ''}${server.friendsAllowed === true ? ' · friends allowed' : ''}${userSummary}${subscriptionSummary}</span></div><div class="saved-entry-actions">${actions.join('')}</div></div>`;
 }
 
 function renderPrivateServers(page) {
   const node = $('my-private-list');
-  if (!page?.data?.length) { node.innerHTML = '<p class="muted">No private servers were returned for this selection.</p>'; return; }
-  node.innerHTML = page.data.map((server) => renderPrivateServerEntry(server)).join('');
+  state.privateAccessible = Array.isArray(page?.data) ? page.data : [];
+  if (!state.privateAccessible.length) { node.innerHTML = '<p class="muted">No private servers were returned for this experience.</p>'; updatePrivateSummary(); return; }
+  node.innerHTML = state.privateAccessible.map((server) => renderPrivateServerEntry(server)).join('');
+  updatePrivateSummary();
 }
 
 function renderOwnedPrivateServers(page) {
   const node = $('owned-private-list');
   const selected = state.selected;
-  const data = Array.isArray(page?.data) ? page.data.filter((server) => selected && (server.placeId === selected.rootPlaceId || server.universeId === selected.universeId)) : [];
-  if (!data.length) {
-    node.innerHTML = '<p class="muted">You do not own a private server for this experience yet.</p>';
-    return;
-  }
-  node.innerHTML = data.map((server) => renderPrivateServerEntry(server, true)).join('');
+  state.privateOwned = Array.isArray(page?.data) ? page.data.filter((server) => selected && (server.placeId === selected.rootPlaceId || server.universeId === selected.universeId)) : [];
+  if (!state.privateOwned.length) { node.innerHTML = '<p class="muted">You do not own a private server for this experience yet.</p>'; updatePrivateSummary(); return; }
+  node.innerHTML = state.privateOwned.map((server) => renderPrivateServerEntry(server, true)).join('');
+  updatePrivateSummary();
 }
 
 async function listPrivateServers() {
   if (!state.auth.authenticated) { setMessage('Sign in to list private servers.'); return; }
   if (!state.selected) { setMessage('Choose an experience first.'); return; }
-  try { const page = await api.listPrivateServers({ placeId: state.selected.rootPlaceId }); renderPrivateServers(page); showSection('my-private-section', true); }
-  catch (error) { setMessage(error.message || 'Could not list private servers.'); }
+  const selectedUniverseId = state.selected.universeId;
+  const selectedPlaceId = state.selected.rootPlaceId;
+  $('my-private-list').innerHTML = '<p class="muted">Loading joinable servers…</p>';
+  try {
+    const page = await api.listPrivateServers({ placeId: selectedPlaceId });
+    if (state.selected?.universeId !== selectedUniverseId) return;
+    renderPrivateServers(page);
+  }
+  catch (error) {
+    if (state.selected?.universeId === selectedUniverseId) {
+      state.privateAccessible = [];
+      $('my-private-list').innerHTML = `<p class="muted">${escapeHtml(error.message || 'Could not list private servers.')}</p>`;
+      updatePrivateSummary();
+    }
+    setMessage(error.message || 'Could not list private servers.');
+  }
 }
 
 async function listOwnedPrivateServers() {
   if (!state.auth.authenticated || !state.selected) return;
+  const selectedUniverseId = state.selected.universeId;
   closePermissionsEditor();
-  const node = $('owned-private-list');
-  node.innerHTML = '<p class="muted">Loading your private servers…</p>';
+  $('owned-private-list').innerHTML = '<p class="muted">Loading your private servers…</p>';
   try {
     const page = await api.listPrivateServers({ mine: true });
+    if (state.selected?.universeId !== selectedUniverseId) return;
     renderOwnedPrivateServers(page);
     showSection('owned-private-section', true);
-  } catch (error) {
-    node.innerHTML = '<p class="muted">Your owned private servers are unavailable right now.</p>';
+  }
+  catch (error) {
+    if (state.selected?.universeId !== selectedUniverseId) return;
+    state.privateOwned = [];
+    $('owned-private-list').innerHTML = '<p class="muted">Your owned private servers are unavailable right now.</p>';
+    updatePrivateSummary();
     setMessage(error.message || 'Could not load your private servers.');
   }
+}
+
+async function loadPrivateForSelected() {
+  if (!state.auth.authenticated || !state.selected) return;
+  state.privateLoading = true;
+  updatePrivateSummary();
+  try { await Promise.allSettled([listPrivateServers(), listOwnedPrivateServers()]); }
+  finally { state.privateLoading = false; updatePrivateSummary(); }
 }
 
 async function runDiagnostics() {
@@ -335,61 +711,138 @@ async function runDiagnostics() {
   } catch (error) { setMessage(error.message || 'Diagnostics failed.'); }
 }
 
+async function renderRoute() {
+  const route = parseRoute();
+  closeAllDialogs();
+  if (route.name === 'search' && !route.query) { navigate('/home', { replace: true }); return; }
+  if (route.name === 'home') {
+    state.routeRequest += 1;
+    state.searchRouteQuery = undefined;
+    state.selected = undefined;
+    state.details = undefined;
+    setActivePage('home');
+    await loadHome();
+    return;
+  }
+  if (route.name === 'search') {
+    state.routeRequest += 1;
+    setActivePage('search');
+    state.query = route.query;
+    $('search-input').value = route.query;
+    if (state.searchRouteQuery !== route.query) {
+      state.searchRouteQuery = route.query;
+      await search(route.query);
+    }
+    return;
+  }
+  if (route.name === 'experience') {
+    await loadExperienceRoute(route.universeId);
+  }
+}
+
 document.addEventListener('click', async (event) => {
+  const closeTarget = event.target.closest('[data-close-dialog]');
+  if (closeTarget) { closeDialog(closeTarget.dataset.closeDialog); return; }
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const action = target.dataset.action;
-  if (action === 'details') await selectExperience(target.dataset.id);
+  if (action === 'details') navigate(`/experience/${target.dataset.id}`);
   else if (action === 'play') await launch({ placeId: target.dataset.placeId });
   else if (action === 'server-join') await launch({ placeId: target.dataset.placeId, gameInstanceId: target.dataset.jobId });
-  else if (action === 'favorite') { try { const response = await api.toggleFavorite({ universeId: target.dataset.id }); if (response.favorited) state.favorites.add(target.dataset.id); else state.favorites.delete(target.dataset.id); renderExperience(); setMessage(response.favorited ? 'Added to favorites.' : 'Removed from favorites.', 'ok'); } catch (error) { setMessage(error.message); } }
-  else if (action === 'private-for-place') await listPrivateServers();
-  else if (action === 'saved-join') { try { await api.useSavedPrivateJoin({ id: target.dataset.id, format: selectedLaunchFormat() }); setMessage('Sent to Roblox Player.', 'ok'); } catch (error) { setMessage(error.message); } }
-  else if (action === 'saved-delete') { try { await api.deleteSavedPrivateJoin({ id: target.dataset.id }); await refreshSavedJoins(); setMessage('Saved private server removed.', 'ok'); } catch (error) { setMessage(error.message); } }
-  else if (action === 'private-entry-join') {
+  else if (action === 'favorite') {
+    try {
+      const response = await api.toggleFavorite({ universeId: target.dataset.id });
+      if (response.favorited) state.favorites.add(target.dataset.id); else state.favorites.delete(target.dataset.id);
+      if (state.details) renderExperience();
+      renderHomeRails();
+      setMessage(response.favorited ? 'Added to favorites.' : 'Removed from favorites.', 'ok');
+    } catch (error) { setMessage(error.message || 'Could not update favorites.'); }
+  } else if (action === 'open-private') {
+    if (!state.auth.authenticated) { setMessage('Sign in to manage your private servers.'); return; }
+    openDialog('owner-private-dialog');
+    void listOwnedPrivateServers();
+  } else if (action === 'scroll-private') {
+    $('private-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  else if (action === 'saved-join') {
+    try { await api.useSavedPrivateJoin({ id: target.dataset.id, format: selectedLaunchFormat() }); setMessage('Sent to Roblox Player.', 'ok'); }
+    catch (error) { setMessage(error.message); }
+  } else if (action === 'saved-delete') {
+    try { await api.deleteSavedPrivateJoin({ id: target.dataset.id }); await refreshSavedJoins(); setMessage('Saved private server removed.', 'ok'); }
+    catch (error) { setMessage(error.message); }
+  } else if (action === 'private-entry-join') {
     try {
       await api.joinPrivateServer({ vipServerId: target.dataset.id, format: selectedLaunchFormat(), ...(target.dataset.placeId ? { placeId: target.dataset.placeId } : {}) });
       setMessage('Sent to Roblox Player. It will apply your account permissions and join rules.', 'ok');
     } catch (error) { setMessage(error.message || 'Could not hand off to Roblox Player.'); }
-  }
-  else if (action === 'permissions-private') openPermissionsEditor(target);
+  } else if (action === 'permissions-private') openPermissionsEditor(target);
   else if (action === 'subscription-private') {
     const active = target.dataset.active !== 'true';
     const warning = active ? 'Renew this private-server subscription? Roblox may charge Robux.' : 'Cancel this private-server subscription?';
     if (!window.confirm(warning)) return;
-    try { await api.updatePrivateServer({ vipServerId: target.dataset.id, operation: 'subscription', payload: { active, ...(active ? { confirmPurchase: true } : {}) } }); await listOwnedPrivateServers(); setMessage(active ? 'Private-server subscription renewed.' : 'Private-server subscription cancelled.', 'ok'); } catch (error) { setMessage(error.message || 'Could not update subscription.'); }
+    try { await api.updatePrivateServer({ vipServerId: target.dataset.id, operation: 'subscription', payload: { active, ...(active ? { confirmPurchase: true } : {}) } }); await listOwnedPrivateServers(); setMessage(active ? 'Private-server subscription renewed.' : 'Private-server subscription cancelled.', 'ok'); }
+    catch (error) { setMessage(error.message || 'Could not update subscription.'); }
   }
 });
 
-$('search-form').addEventListener('submit', (event) => { event.preventDefault(); search($('search-input').value); });
+document.addEventListener('keydown', (event) => {
+  const tile = event.target.closest?.('.experience-tile');
+  if (!tile || event.target !== tile || !['Enter', ' '].includes(event.key)) return;
+  event.preventDefault();
+  navigate(`/experience/${tile.dataset.id}`);
+});
+
+$('home-button').addEventListener('click', () => navigate('/home'));
+$('nav-home-button').addEventListener('click', () => navigate('/home'));
+$('details-home-button').addEventListener('click', () => navigate('/home'));
+$('search-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const query = $('search-input').value.trim();
+  if (!query) { setMessage('Enter a search term first.'); return; }
+  navigate(`/search?q=${encodeURIComponent(query)}`);
+});
 $('load-more-button').addEventListener('click', () => search(state.query, true));
-$('back-results-button').addEventListener('click', () => { closePermissionsEditor(); showSection('experience-section', false); showSection('servers-section', false); showSection('my-private-section', false); showSection('owned-private-section', false); showSection('results-section', true); });
 $('refresh-servers-button').addEventListener('click', () => listPublicServers());
 $('exclude-full-checkbox').addEventListener('change', () => listPublicServers());
 $('load-more-servers-button').addEventListener('click', () => listPublicServers(state.publicCursor));
+$('refresh-charts-button').addEventListener('click', () => { state.chartsLoaded = false; state.chartsError = undefined; renderHomeRails(); void loadHome({ force: true }); });
+$('open-private-button').addEventListener('click', () => {
+  if (!state.selected) return;
+  if (!state.auth.authenticated) { setMessage('Sign in to manage your private servers.'); return; }
+  openDialog('owner-private-dialog');
+  void listOwnedPrivateServers();
+});
+$('join-link-button').addEventListener('click', () => { openDialog('join-dialog'); void refreshSavedJoins(); });
+$('settings-button').addEventListener('click', () => { openDialog('settings-dialog'); void refreshAuthProxyConfig(); });
 $('refresh-saved-button').addEventListener('click', refreshSavedJoins);
 $('list-place-private-button').addEventListener('click', listPrivateServers);
 $('refresh-owned-private-button').addEventListener('click', listOwnedPrivateServers);
-$('settings-button').addEventListener('click', () => { showSection('settings-section', true); void refreshAuthProxyConfig(); $('settings-section').scrollIntoView({ behavior: 'smooth' }); });
-$('auth-proxy-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  await saveAuthProxy($('auth-proxy-input').value.trim());
-});
-$('clear-auth-proxy-button').addEventListener('click', async () => {
-  $('auth-proxy-input').value = '';
-  await saveAuthProxy('');
-});
+$('auth-proxy-form').addEventListener('submit', async (event) => { event.preventDefault(); await saveAuthProxy($('auth-proxy-input').value.trim()); });
+$('clear-auth-proxy-button').addEventListener('click', async () => { $('auth-proxy-input').value = ''; await saveAuthProxy(''); });
 $('run-diagnostics-button').addEventListener('click', runDiagnostics);
 $('clear-browsing-button').addEventListener('click', async () => {
   if (!window.confirm('Clear recent experience history and in-memory API cache? Favorites and saved private servers will stay.')) return;
-  try { await api.clearBrowsingData(); setMessage('Browsing history and API cache cleared.', 'ok'); } catch (error) { setMessage(error.message || 'Could not clear browsing data.'); }
+  try { await api.clearBrowsingData(); state.recents = []; state.experienceCache.clear(); state.homeLoadPromise = undefined; renderHomeRails(); setMessage('Browsing history and API cache cleared.', 'ok'); }
+  catch (error) { setMessage(error.message || 'Could not clear browsing data.'); }
 });
 $('forget-private-button').addEventListener('click', async () => {
   if (!window.confirm('Forget every saved private-server code from this app?')) return;
-  try { state.savedJoins = await api.forgetSavedPrivateJoins(); renderSavedJoins(); setMessage('Saved private-server codes forgotten.', 'ok'); } catch (error) { setMessage(error.message || 'Could not forget saved private servers.'); }
+  try { state.savedJoins = await api.forgetSavedPrivateJoins(); renderSavedJoins(); setMessage('Saved private-server codes forgotten.', 'ok'); }
+  catch (error) { setMessage(error.message || 'Could not forget saved private servers.'); }
 });
-$('clear-session-button').addEventListener('click', async () => { if (!window.confirm('Sign out and clear the Roblox web session for this app?')) return; try { state.auth = await api.signOut(); renderAuth(); setMessage('Roblox session cleared.', 'ok'); } catch (error) { setMessage(error.message); } });
-$('auth-button').addEventListener('click', async () => { try { if (state.auth.authenticated) { state.auth = await api.signOut(); setMessage('Roblox session cleared.', 'ok'); } else { await api.beginSignIn(); setMessage('Complete sign-in in the Roblox window, then return here.', 'ok'); } await refreshAuth(); await refreshAuthProxyConfig(); } catch (error) { setMessage(error.message || 'Could not open sign-in.'); } });
+$('clear-session-button').addEventListener('click', async () => {
+  if (!window.confirm('Sign out and clear the Roblox web session for this app?')) return;
+  try { state.auth = await api.signOut(); renderAuth(); setMessage('Roblox session cleared.', 'ok'); }
+  catch (error) { setMessage(error.message); }
+});
+$('auth-button').addEventListener('click', async () => {
+  try {
+    if (state.auth.authenticated) { state.auth = await api.signOut(); setMessage('Roblox session cleared.', 'ok'); }
+    else { await api.beginSignIn(); setMessage('Complete sign-in in the Roblox window, then return here.', 'ok'); }
+    await refreshAuth();
+    await refreshAuthProxyConfig();
+  } catch (error) { setMessage(error.message || 'Could not open sign-in.'); }
+});
 $('create-private-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!state.selected) { setMessage('Choose an experience first.'); return; }
@@ -407,37 +860,26 @@ $('create-private-form').addEventListener('submit', async (event) => {
   }
   const createButton = $('create-private-button');
   createButton.disabled = true;
-  try {
-    await api.createPrivateServer({ universeId: state.selected.universeId, body, confirmPurchase: true });
-    $('create-private-form').reset();
-    setMessage('Private server created. Refreshing your owned servers…', 'ok');
-    await listOwnedPrivateServers();
-  } catch (error) {
-    setMessage(error.message || 'Could not create the private server.');
-  } finally {
-    renderOwnedPrivateSectionState();
-  }
+  try { await api.createPrivateServer({ universeId: state.selected.universeId, body, confirmPurchase: true }); $('create-private-form').reset(); setMessage('Private server created. Refreshing your owned servers…', 'ok'); await listOwnedPrivateServers(); }
+  catch (error) { setMessage(error.message || 'Could not create the private server.'); }
+  finally { renderOwnedPrivateSectionState(); }
 });
 $('permissions-private-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!state.permissionsServerId) return;
+  if (!state.permissionsSettingsLoaded) { setMessage('Current private-server settings are unavailable; refresh and try again.'); return; }
   const parseIds = (value) => value ? value.split(',').map((item) => item.trim()).filter(Boolean) : [];
+  const allowedUsers = parseIds($('permissions-private-add').value);
+  const explicitlyRemoved = parseIds($('permissions-private-remove').value);
+  const originalUsers = new Set(state.permissionsOriginalUsers);
+  const usersToAdd = [...new Set(allowedUsers.filter((userId) => !originalUsers.has(userId)))];
+  const usersToRemove = [...new Set([...explicitlyRemoved, ...state.permissionsOriginalUsers.filter((userId) => !allowedUsers.includes(userId))])];
   try {
-    await api.updatePrivateServer({
-      vipServerId: state.permissionsServerId,
-      operation: 'permissions',
-      payload: {
-        friendsAllowed: $('permissions-private-friends').checked,
-        usersToAdd: parseIds($('permissions-private-add').value),
-        usersToRemove: parseIds($('permissions-private-remove').value)
-      }
-    });
+    await api.updatePrivateServer({ vipServerId: state.permissionsServerId, operation: 'permissions', payload: { friendsAllowed: $('permissions-private-friends').checked, usersToAdd, usersToRemove } });
     closePermissionsEditor();
     await listOwnedPrivateServers();
     setMessage('Private-server access updated.', 'ok');
-  } catch (error) {
-    setMessage(error.message || 'Could not update private-server access.');
-  }
+  } catch (error) { setMessage(error.message || 'Could not update private-server access.'); }
 });
 $('cancel-permissions-private-button').addEventListener('click', closePermissionsEditor);
 $('private-link-form').addEventListener('submit', async (event) => {
@@ -462,22 +904,27 @@ $('join-private-button').addEventListener('click', async () => {
   const intent = { placeId: parsed.placeId, ...(parsed.kind === 'accessCode' ? { accessCode: parsed.code } : { linkCode: parsed.code }) };
   await launch(intent);
   if ($('remember-private-checkbox').checked) {
-    try { await api.savePrivateJoin({ label: $('private-label-input').value.trim() || 'Saved private server', placeId: parsed.placeId, kind: parsed.kind, code: parsed.code }); await refreshSavedJoins(); setMessage('Private-server code saved.', 'ok'); } catch (error) { setMessage(error.message || 'Could not save private code.'); }
+    try { await api.savePrivateJoin({ label: $('private-label-input').value.trim() || 'Saved private server', placeId: parsed.placeId, kind: parsed.kind, code: parsed.code }); await refreshSavedJoins(); setMessage('Private-server code saved.', 'ok'); }
+    catch (error) { setMessage(error.message || 'Could not save private code.'); }
   }
 });
 
 if (typeof api.onAuthStateChanged === 'function') api.onAuthStateChanged(handleAuthStateChanged);
+window.addEventListener('hashchange', () => { void renderRoute(); });
 
 async function init() {
   try {
     const local = await api.getLocalState();
     state.favorites = new Set(local.favorites || []);
+    state.recents = Array.isArray(local.recents) ? local.recents : [];
     state.savedJoins = local.privateJoins || [];
     renderSavedJoins();
   } catch { /* local state is optional */ }
   await refreshAuth();
   await refreshAuthProxyConfig();
-  runDiagnostics();
+  if (!window.location.hash) navigate('/home', { replace: true });
+  else await renderRoute();
+  void runDiagnostics();
 }
 
-init();
+void init();

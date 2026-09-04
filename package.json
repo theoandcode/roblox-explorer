@@ -1,8 +1,9 @@
 {
-  "name": "roblox-navigator",
+  "name": "roblox-explorer",
+  "productName": "Roblox Explorer",
   "version": "0.1.0",
   "private": true,
-  "description": "An anonymous-first Electron navigator for Roblox experiences and servers.",
+  "description": "An anonymous-first Electron explorer for Roblox experiences and servers.",
   "main": "src/main/main.js",
   "type": "commonjs",
   "scripts": {

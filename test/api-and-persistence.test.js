@@ -275,6 +275,9 @@ test('persists and clears the login proxy setting without exposing credentials',
   store.setAuthProxy(undefined);
   assert.equal(store.getAuthProxy(), undefined);
   assert.equal(new LocalStore(file).getAuthProxy(), undefined);
+  store.setAuthProxy('');
+  assert.equal(store.getAuthProxy(), '');
+  assert.equal(new LocalStore(file).getAuthProxy(), '');
   fs.rmSync(directory, { recursive: true, force: true });
 });
 

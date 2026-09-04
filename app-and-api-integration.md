@@ -551,12 +551,18 @@ Provide “Clear browsing data,” “Forget saved private servers,” and “Si
 
 Build x64 and arm64 where both Electron and Roblox Player support the combination. The UI must not equate Electron platform support with Roblox Player platform support.
 
-The repository's `scripts/build.js` wrapper invokes `dotenv-cli` before running
-electron-builder. `npm run build:mac`, `npm run build:win`, and
-`npm run build:linux` select one target; `npm run build:all` requests all three,
-and `npm run build` selects the current host. Environment files are build-time
-inputs only and are not copied into packaged artifacts; they must contain only
-non-secret settings.
+The npm build scripts invoke `dotenv-cli` before starting the repository's
+`scripts/build.js` wrapper. The wrapper only resolves and runs electron-builder
+with `electron-builder.config.js`; it does not load dotenv itself. `npm run build:mac`,
+`npm run build:win`, and `npm run build:linux` select one target;
+`npm run build:all` requests all three, and `npm run build` selects the current
+host. The configuration validates `ROBLOX_NAVIGATOR_AUTH_PROXY` and writes only
+the normalized, non-secret endpoint to the packaged `package.json` under
+`robloxExplorerDefaults.authProxy`. The runtime reads that metadata as a
+packaged fallback. A saved Settings value (including an explicit empty value to
+force the system proxy) takes precedence, followed by an explicitly supplied
+process environment variable. The selected environment file itself is never
+copied into packaged artifacts and must contain no other secrets.
 
 ## 13. Testing strategy
 

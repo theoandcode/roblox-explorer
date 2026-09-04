@@ -5,11 +5,6 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
-const envFile = process.env.ROBLOX_NAVIGATOR_ENV_FILE;
-const envCandidates = [envFile, path.join(projectRoot, '.env'), path.join(projectRoot, '.env.example')]
-  .filter(Boolean)
-  .map((candidate) => path.resolve(String(candidate)));
-const selectedEnvFile = envCandidates.find((candidate) => fs.existsSync(candidate));
 
 const targets = {
   mac: ['--mac'],
@@ -49,17 +44,17 @@ if (!fs.existsSync(binaryPath)) {
   process.exit(1);
 }
 
-const dotenvName = process.platform === 'win32' ? 'dotenv.cmd' : 'dotenv';
-const dotenvPath = path.join(projectRoot, 'node_modules', '.bin', dotenvName);
-if (!fs.existsSync(dotenvPath)) {
-  console.error('dotenv-cli is not installed. Run npm install first.');
+const builderConfigPath = path.join(projectRoot, 'electron-builder.config.js');
+if (!fs.existsSync(builderConfigPath)) {
+  console.error('electron-builder.config.js is missing.');
   process.exit(1);
 }
-const dotenvArgs = selectedEnvFile ? ['-e', selectedEnvFile, '--'] : [];
-if (selectedEnvFile) console.log(`Loaded build environment with dotenv-cli from ${path.relative(projectRoot, selectedEnvFile)}`);
+
 console.log(`Building ${targetArgs.join(' ')}…`);
 
-const result = spawnSync(dotenvPath, [...dotenvArgs, binaryPath, ...targetArgs, ...passthrough], {
+const hasCustomConfig = passthrough.some((arg) => arg === '--config' || arg === '-c' || arg.startsWith('--config=') || arg.startsWith('-c='));
+const configArgs = hasCustomConfig ? [] : ['--config', builderConfigPath];
+const result = spawnSync(binaryPath, [...configArgs, ...targetArgs, ...passthrough], {
   cwd: projectRoot,
   env: process.env,
   stdio: 'inherit'

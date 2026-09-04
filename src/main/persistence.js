@@ -18,10 +18,10 @@ function normalizeRecent(value) {
 }
 
 function normalizeSettings(value) {
-  const proxy = value && typeof value === 'object' && typeof value.authProxy === 'string'
-    ? value.authProxy.trim().slice(0, 512)
-    : '';
-  return { authProxy: proxy || undefined };
+  if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, 'authProxy') || typeof value.authProxy !== 'string') {
+    return { authProxy: undefined };
+  }
+  return { authProxy: value.authProxy.trim().slice(0, 512) };
 }
 
 class LocalStore {
@@ -118,7 +118,9 @@ class LocalStore {
   }
 
   setAuthProxy(value) {
-    this.state.settings = normalizeSettings({ authProxy: value });
+    // `undefined` removes the override (allowing an environment or packaged
+    // default to apply); an empty string is an explicit system-proxy override.
+    this.state.settings = value === undefined ? normalizeSettings() : normalizeSettings({ authProxy: value });
     this.write();
   }
 

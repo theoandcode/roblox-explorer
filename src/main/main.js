@@ -2,6 +2,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
 const { AUTH_PROXY_ENV, normalizeAuthProxy } = require('./auth-proxy');
+const { getRuntimeDefault } = require('./runtime-config');
 const {
   app,
   BrowserWindow,
@@ -122,7 +123,7 @@ function storedAuthProxy() {
 
 function configuredAuthProxy() {
   const saved = storedAuthProxy();
-  return saved !== undefined ? saved : process.env[AUTH_PROXY_ENV];
+  return saved !== undefined ? saved : process.env[AUTH_PROXY_ENV] || getRuntimeDefault('authProxy');
 }
 
 function authProxyRules(raw = configuredAuthProxy()) {
@@ -202,7 +203,7 @@ function watchAuthCookie() {
 
 function authProxyConfig() {
   const saved = storedAuthProxy();
-  const environment = process.env[AUTH_PROXY_ENV];
+  const environment = process.env[AUTH_PROXY_ENV] || getRuntimeDefault('authProxy');
   const effective = saved !== undefined ? saved : environment;
   let valid = true;
   let error;
@@ -215,7 +216,7 @@ function authProxyConfig() {
     // Never echo an invalid persisted value (which could contain credentials)
     // back across IPC. The user can clear it and enter a validated URL.
     authProxy: valid && saved ? normalized || '' : '',
-    source: saved !== undefined ? 'saved' : environment ? 'environment' : 'system',
+    source: saved !== undefined ? (saved ? 'saved' : 'system') : environment ? 'environment' : 'system',
     configured: Boolean(effective),
     active: authProxyApplied,
     valid,
@@ -415,7 +416,7 @@ function requirePrivateJoinIntent(intent) {
 function validateAuthProxyInput(input) {
   assertPlainObject(input, 'auth proxy input');
   const raw = input.proxy === undefined ? '' : boundedString(input.proxy, 'proxy', 512).trim();
-  return raw ? authProxyRules(raw) : undefined;
+  return raw ? authProxyRules(raw) : '';
 }
 
 function requirePrivateServerManagement() {

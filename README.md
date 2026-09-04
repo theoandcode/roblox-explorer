@@ -58,16 +58,21 @@ ROBLOX_NAVIGATOR_AUTH_PROXY=socks4://127.0.0.1:1080 npm start
 ROBLOX_NAVIGATOR_AUTH_PROXY=socks5://127.0.0.1:1080 npm start
 ```
 
-The same value can be set or cleared from **Settings → Roblox login proxy**. Leave it empty to use the operating-system proxy.
+The same value can be set or cleared from **Settings → Roblox login proxy**.
+Leaving it empty uses the operating-system proxy, including when a packaged
+build has a proxy default.
 
 The proxy is applied only to the isolated Roblox login session while sign-in is in progress, then removed after authentication. Anonymous API requests and private-server API calls remain direct. Use a proxy you trust because it can observe connection metadata. This is a network-reachability workaround, not a way to bypass Roblox account permissions, paid access, moderation, or private-server admission rules.
 
 The repository includes a local `.env` with the default proxy above. `npm start`
-and the build commands load `.env` with `dotenv-cli`, falling back to
-`.env.example`; shell variables take precedence. Use
-`ROBLOX_NAVIGATOR_ENV_FILE=/path/to/file.env` with a build command to select a
-different environment file. Environment files are never bundled into packaged
-artifacts, so do not put credentials or other secrets in them.
+and the build commands invoke `dotenv-cli` before starting Electron or
+electron-builder, falling back to `.env.example`; shell variables take
+precedence. To use a different environment file, invoke the builder wrapper
+through dotenv directly, for example `dotenv -e /path/to/file.env -- node
+scripts/build.js --mac`. For a packaged build, the validated proxy endpoint
+is copied into the app's `robloxExplorerDefaults` metadata so the installed app
+can use it without a runtime `.env` file. The environment file itself is never
+bundled, and proxy credentials are rejected, so do not put other secrets in it.
 
 ## Run locally
 
@@ -85,10 +90,11 @@ npm run check
 
 ## Build locally
 
-`electron-builder` is configured for macOS DMG, Windows NSIS, and Linux
-AppImage/deb artifacts. The build wrapper uses `dotenv-cli` to load `.env` (or
-`.env.example` when `.env` is absent) and forwards its variables to the
-builder:
+`electron-builder` is configured in `electron-builder.config.js` for macOS DMG,
+Windows NSIS, and Linux AppImage/deb artifacts. The npm build scripts use
+`dotenv-cli` to load `.env` (or `.env.example` when `.env` is absent). The
+configuration validates the proxy and embeds only that non-secret endpoint as a
+packaged default:
 
 ```sh
 npm run build:mac

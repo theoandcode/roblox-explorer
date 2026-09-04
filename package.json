@@ -1,7 +1,7 @@
 {
   "name": "roblox-explorer",
   "productName": "Roblox Explorer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "An anonymous-first Electron explorer for Roblox experiences and servers.",
   "main": "src/main/main.js",
@@ -11,78 +11,18 @@
     "start": "dotenv -e .env -e .env.example -- electron .",
     "postinstall": "node scripts/ensure-electron-install.js",
     "test": "node --test",
-    "check": "node --check scripts/ensure-electron-install.js && node --check scripts/build.js && node --check src/main/auth-proxy.js && node --check src/main/main.js && node --check src/main/roblox-client.js && node --check src/main/launch-uri.js && node --check src/main/private-link.js && node --check src/main/persistence.js && node --check src/main/validation.js && node --check src/preload/preload.js && node --check src/renderer/renderer.js",
-    "build": "node scripts/build.js --current",
-    "build:current": "node scripts/build.js --current",
-    "build:mac": "node scripts/build.js --mac",
-    "build:win": "node scripts/build.js --win",
-    "build:linux": "node scripts/build.js --linux",
-    "build:all": "node scripts/build.js --all"
+    "check": "node --check scripts/ensure-electron-install.js && node --check scripts/build.js && node --check electron-builder.config.js && node --check src/main/auth-proxy.js && node --check src/main/runtime-config.js && node --check src/main/main.js && node --check src/main/roblox-client.js && node --check src/main/launch-uri.js && node --check src/main/private-link.js && node --check src/main/persistence.js && node --check src/main/validation.js && node --check src/preload/preload.js && node --check src/renderer/renderer.js",
+    "build": "dotenv -e .env -e .env.example -- node scripts/build.js --current",
+    "build:current": "dotenv -e .env -e .env.example -- node scripts/build.js --current",
+    "build:mac": "dotenv -e .env -e .env.example -- node scripts/build.js --mac",
+    "build:win": "dotenv -e .env -e .env.example -- node scripts/build.js --win",
+    "build:linux": "dotenv -e .env -e .env.example -- node scripts/build.js --linux",
+    "build:all": "dotenv -e .env -e .env.example -- node scripts/build.js --all"
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0",
     "electron": "^38.0.0",
     "electron-builder": "^26.15.3"
-  },
-  "build": {
-    "appId": "com.roblox.explorer",
-    "productName": "Roblox Explorer",
-    "asar": true,
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "src/**/*",
-      "avatar.jpeg",
-      "package.json",
-      "!test{,/**/*}",
-      "!scripts{,/**/*}",
-      "!README.md",
-      "!app-and-api-integration.md"
-    ],
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "category": "public.app-category.games"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ]
-    },
-    "linux": {
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "deb",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "category": "Game"
-    }
   },
   "allowScripts": {
     "electron@38.8.6": true
